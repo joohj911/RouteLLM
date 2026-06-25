@@ -1,7 +1,6 @@
 import torch
 from huggingface_hub import PyTorchModelHubMixin
-
-from routellm.routers.similarity_weighted.utils import OPENAI_CLIENT
+from sentence_transformers import SentenceTransformer
 
 MODEL_IDS = {
     "RWKV-4-Raven-14B": 0,
@@ -68,7 +67,20 @@ MODEL_IDS = {
     "yi-34b-chat": 61,
     "zephyr-7b-alpha": 62,
     "zephyr-7b-beta": 63,
+    "qwen3.5-2b": 64,
+    "qwen3.5-9b": 65,
 }
+
+
+EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
+_EMBEDDING_MODEL = None
+
+
+def get_embedding_model():
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is None:
+        _EMBEDDING_MODEL = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _EMBEDDING_MODEL
 
 
 class MFModel(torch.nn.Module, PyTorchModelHubMixin):
@@ -76,16 +88,14 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
         self,
         dim,
         num_models,
-        text_dim,
-        num_classes,
-        use_proj,
+        text_dim=384,
+        num_classes=1,
+        use_proj=True,
     ):
         super().__init__()
         self._name = "TextMF"
         self.use_proj = use_proj
         self.P = torch.nn.Embedding(num_models, dim)
-
-        self.embedding_model = "text-embedding-3-small"
 
         if self.use_proj:
             self.text_proj = torch.nn.Sequential(
@@ -109,13 +119,14 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
         model_embed = self.P(model_id)
         model_embed = torch.nn.functional.normalize(model_embed, p=2, dim=1)
 
-        prompt_embed = (
-            OPENAI_CLIENT.embeddings.create(input=[prompt], model=self.embedding_model)
-            .data[0]
-            .embedding
+        # multilingual-e5-small uses "query: " prefix for asymmetric retrieval tasks
+        prompt_embed = get_embedding_model().encode(
+            f"query: {prompt}",
+            convert_to_tensor=True,
+            device=str(self.get_device()),
         )
-        prompt_embed = torch.tensor(prompt_embed, device=self.get_device())
-        prompt_embed = self.text_proj(prompt_embed)
+        if self.use_proj:
+            prompt_embed = self.text_proj(prompt_embed)
 
         return self.classifier(model_embed * prompt_embed).squeeze()
 

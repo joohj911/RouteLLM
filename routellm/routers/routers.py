@@ -213,11 +213,11 @@ class MatrixFactorizationRouter(Router):
         checkpoint_path,
         # This is the model pair for scoring at inference time,
         # and can be different from the model pair used for routing.
-        strong_model="gpt-4-1106-preview",
-        weak_model="mixtral-8x7b-instruct-v0.1",
+        strong_model="qwen3.5-9b",
+        weak_model="qwen3.5-2b",
         hidden_size=128,
-        num_models=64,
-        text_dim=1536,
+        num_models=66,
+        text_dim=384,
         num_classes=1,
         use_proj=True,
     ):
