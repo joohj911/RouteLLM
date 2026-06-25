@@ -1,5 +1,5 @@
 """
-BFCL (v1, v2, v3) 데이터로 MF 라우터 학습/평가 데이터를 준비하는 스크립트.
+BFCL v4 데이터로 MF 라우터 학습/평가 데이터를 준비하는 스크립트.
 
 두 단계로 동작:
   1. embed  : BFCL 프롬프트를 multilingual-e5-small로 임베딩 → .npy 저장
@@ -25,7 +25,7 @@ BFCL (v1, v2, v3) 데이터로 MF 라우터 학습/평가 데이터를 준비하
 eval_results.json 형식 (모델 실행 후 직접 생성):
   [
     {
-      "id": "live_simple_0",
+      "id": "BFCL_v4_live_simple_0",
       "qwen3.5-2b_pass": true,
       "qwen3.5-9b_pass": false
     },
@@ -44,26 +44,32 @@ from sentence_transformers import SentenceTransformer
 
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 
-# BFCL v1, v2, v3 split 목록 (버전 태그 포함)
+# BFCL v4 split 목록. HuggingFace split 이름은 "BFCL_v4_{category}" 패턴.
+# 존재하지 않는 split은 load_bfcl_prompts()에서 자동으로 skip됨.
+#
+# 카테고리 출처: gorilla/berkeley-function-call-leaderboard/bfcl_eval/constants/category_mapping.py
+# agentic 카테고리(memory_*, web_search_*)는 외부 백엔드가 필요해 제외.
 BFCL_SPLITS = [
-    # V1 - expert curated, single-turn
-    ("v1", "gorilla_openfunctions_v1_test_simple"),
-    ("v1", "gorilla_openfunctions_v1_test_multiple_function"),
-    ("v1", "gorilla_openfunctions_v1_test_parallel_function"),
-    ("v1", "gorilla_openfunctions_v1_test_parallel_multiple_function"),
-    ("v1", "gorilla_openfunctions_v1_test_relevance"),
-    # V2 - community contributed (live)
-    ("v2", "live_simple"),
-    ("v2", "live_multiple"),
-    ("v2", "live_parallel"),
-    ("v2", "live_parallel_multiple"),
-    ("v2", "live_relevance"),
-    ("v2", "live_irrelevance"),
-    # V3 - multi-turn
-    ("v3", "multi_turn_base"),
-    ("v3", "multi_turn_miss_func"),
-    ("v3", "multi_turn_miss_param"),
-    ("v3", "multi_turn_long_context"),
+    # Non-live: 전문가 큐레이션, single-turn
+    ("non_live", "BFCL_v4_simple_python"),
+    ("non_live", "BFCL_v4_simple_java"),
+    ("non_live", "BFCL_v4_simple_javascript"),
+    ("non_live", "BFCL_v4_multiple"),
+    ("non_live", "BFCL_v4_parallel"),
+    ("non_live", "BFCL_v4_parallel_multiple"),
+    ("non_live", "BFCL_v4_irrelevance"),
+    # Live: 커뮤니티 기여, single-turn
+    ("live", "BFCL_v4_live_simple"),
+    ("live", "BFCL_v4_live_multiple"),
+    ("live", "BFCL_v4_live_parallel"),
+    ("live", "BFCL_v4_live_parallel_multiple"),
+    ("live", "BFCL_v4_live_relevance"),
+    ("live", "BFCL_v4_live_irrelevance"),
+    # Multi-turn
+    ("multi_turn", "BFCL_v4_multi_turn_base"),
+    ("multi_turn", "BFCL_v4_multi_turn_miss_func"),
+    ("multi_turn", "BFCL_v4_multi_turn_miss_param"),
+    ("multi_turn", "BFCL_v4_multi_turn_long_context"),
 ]
 
 
@@ -83,11 +89,11 @@ def extract_prompt(sample, split_name: str) -> str:
 
 
 def load_bfcl_prompts() -> list[dict]:
-    """BFCL v1/v2/v3 에서 유니크한 프롬프트를 수집한다."""
+    """BFCL v4 에서 유니크한 프롬프트를 수집한다."""
     prompts = []
     seen_ids = set()
 
-    for version, split in BFCL_SPLITS:
+    for category, split in BFCL_SPLITS:
         try:
             ds = load_dataset(BFCL_DATASET, split=split)
         except Exception as e:
@@ -107,7 +113,7 @@ def load_bfcl_prompts() -> list[dict]:
                     {
                         "idx": len(prompts),
                         "id": sample_id,
-                        "bfcl_version": version,
+                        "bfcl_category": category,
                         "bfcl_split": split,
                         "prompt": prompt,
                     }
@@ -220,7 +226,7 @@ def convert_results_to_split_data(
                 "id": prompt_meta["id"],
                 "prompt": prompt_meta["prompt"],
                 "bfcl_split": prompt_meta["bfcl_split"],
-                "bfcl_version": prompt_meta["bfcl_version"],
+                "bfcl_category": prompt_meta["bfcl_category"],
                 weak_model: weak_pass,
                 strong_model: strong_pass,
                 "_winner": winner,
@@ -259,16 +265,16 @@ def convert_results_to_split_data(
     with open(test_path, "w") as f:
         json.dump(test_data, f, ensure_ascii=False, indent=2)
 
-    # 버전별 분포 출력
+    # 카테고리별 분포 출력
     from collections import Counter
-    train_versions = Counter(item["bfcl_version"] for item in train_items)
-    test_versions = Counter(item["bfcl_version"] for item in test_items)
+    train_cats = Counter(item["bfcl_category"] for item in train_items)
+    test_cats = Counter(item["bfcl_category"] for item in test_items)
 
     print(f"\nTotal labeled  : {len(labeled)}  (skipped: {skipped})")
     print(f"Train split    : {len(train_data)} ({train_ratio*100:.0f}%)")
-    print(f"  by version   : {dict(train_versions)}")
+    print(f"  by category  : {dict(train_cats)}")
     print(f"Test split     : {len(test_data)} ({(1-train_ratio)*100:.0f}%)")
-    print(f"  by version   : {dict(test_versions)}")
+    print(f"  by category  : {dict(test_cats)}")
     print(f"\nSaved train    → {train_path}")
     print(f"Saved test     → {test_path}")
 
