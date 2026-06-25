@@ -19,6 +19,7 @@ dependencies = [
 	'tqdm>=4.65',
 	'openai>=1.0',
 	'transformers>=4.44.0',
+	'accelerate>=0.26.0',
 	'datasets>=2.20.0',
 	'litellm>=1.0',
 	'sentence-transformers>=3.0.0',
