@@ -37,15 +37,18 @@ import argparse
 import json
 import os
 import random
+import urllib.request
 
 import numpy as np
-from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 
-BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
-
-# BFCL v4 split 목록. HuggingFace split 이름은 "BFCL_v4_{category}" 패턴.
+# BFCL v4 데이터는 Gorilla GitHub 레포에서 직접 다운로드.
 # 파일 목록 출처: gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/
+GORILLA_RAW_BASE = (
+    "https://raw.githubusercontent.com/ShishirPatil/gorilla/main"
+    "/berkeley-function-call-leaderboard/bfcl_eval/data"
+)
+
 # 존재하지 않는 split은 load_bfcl_prompts()에서 자동으로 skip됨.
 #
 # 제외한 카테고리 (외부 인프라 필요):
@@ -91,6 +94,18 @@ def extract_prompt(sample, split_name: str) -> str:
     return ""
 
 
+def _fetch_split(split: str) -> list[dict]:
+    """GitHub raw URL에서 BFCL split JSON을 다운로드하여 반환."""
+    url = f"{GORILLA_RAW_BASE}/{split}.json"
+    with urllib.request.urlopen(url) as resp:
+        content = resp.read().decode("utf-8")
+    data = json.loads(content)
+    # JSON array 또는 JSONL 모두 처리
+    if isinstance(data, list):
+        return data
+    return [json.loads(line) for line in content.strip().splitlines() if line.strip()]
+
+
 def load_bfcl_prompts() -> list[dict]:
     """BFCL v4 에서 유니크한 프롬프트를 수집한다."""
     prompts = []
@@ -98,13 +113,13 @@ def load_bfcl_prompts() -> list[dict]:
 
     for category, split in BFCL_SPLITS:
         try:
-            ds = load_dataset(BFCL_DATASET, name=split, split="train")
+            samples = _fetch_split(split)
         except Exception as e:
             print(f"  [skip] {split}: {e}")
             continue
 
         added = 0
-        for sample in ds:
+        for sample in samples:
             sample_id = sample.get("id", "")
             if sample_id in seen_ids:
                 continue
