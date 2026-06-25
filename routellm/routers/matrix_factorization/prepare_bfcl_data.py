@@ -99,11 +99,12 @@ def _fetch_split(split: str) -> list[dict]:
     url = f"{GORILLA_RAW_BASE}/{split}.json"
     with urllib.request.urlopen(url) as resp:
         content = resp.read().decode("utf-8")
-    data = json.loads(content)
-    # JSON array 또는 JSONL 모두 처리
-    if isinstance(data, list):
-        return data
-    return [json.loads(line) for line in content.strip().splitlines() if line.strip()]
+    try:
+        data = json.loads(content)
+        return data if isinstance(data, list) else [data]
+    except json.JSONDecodeError:
+        # JSONL: one JSON object per line
+        return [json.loads(line) for line in content.splitlines() if line.strip()]
 
 
 def load_bfcl_prompts() -> list[dict]:
