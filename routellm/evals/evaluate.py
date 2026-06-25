@@ -210,19 +210,33 @@ if __name__ == "__main__":
         default=psutil.cpu_count(logical=False),
         help="Number of cores to use, all by default.",
     )
-    parser.add_argument("--strong-model", type=str, default="Qwen/Qwen3.5-9B")
-    parser.add_argument("--weak-model", type=str, default="Qwen/Qwen3.5-2B")
+    parser.add_argument("--strong-model", type=str, default="qwen3.5-9b")
+    parser.add_argument("--weak-model", type=str, default="qwen3.5-2b")
     parser.add_argument("--config", type=str, default=None)
+    parser.add_argument(
+        "--mf-checkpoint",
+        type=str,
+        default=None,
+        help="Shortcut: path to local .pt MF checkpoint (sets mf.checkpoint_path in config)",
+    )
     parser.add_argument("--num-results", type=int, default=10)
     parser.add_argument("--random-iters", type=int, default=10)
 
     args = parser.parse_args()
     print(args)
 
+    # Build config: --mf-checkpoint is a convenience shortcut for YAML config
+    if args.config:
+        config = yaml.safe_load(open(args.config, "r"))
+    elif args.mf_checkpoint:
+        config = {"mf": {"checkpoint_path": args.mf_checkpoint}}
+    else:
+        config = None
+
     pandarallel.initialize(progress_bar=True, nb_workers=args.parallel)
     controller = Controller(
         routers=args.routers,
-        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+        config=config,
         strong_model=args.strong_model,
         weak_model=args.weak_model,
         progress_bar=True,
