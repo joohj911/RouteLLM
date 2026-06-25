@@ -1,29 +1,33 @@
 """
-BFCL (v1, v2, v3) 데이터로 MF 라우터 학습 데이터를 준비하는 스크립트.
+BFCL (v1, v2, v3) 데이터로 MF 라우터 학습/평가 데이터를 준비하는 스크립트.
 
 두 단계로 동작:
   1. embed  : BFCL 프롬프트를 multilingual-e5-small로 임베딩 → .npy 저장
-  2. convert: 모델 평가 결과(pass/fail JSON)를 학습용 pairwise JSON으로 변환
+  2. convert: 모델 평가 결과(pass/fail JSON)를 train_data.json / test_data.json으로 변환
 
 사용 예시:
   # Step 1 - 임베딩 생성
   python prepare_bfcl_data.py embed --output-dir ./bfcl_data
 
-  # Step 2 - 모델 평가 결과를 학습 데이터로 변환
-  python prepare_bfcl_data.py convert \
-    --results-path ./eval_results.json \
-    --prompts-path ./bfcl_data/prompts.json \
-    --output-path ./bfcl_data/pairwise_data.json \
-    --strong-model qwen3.5-9b \
-    --weak-model qwen3.5-2b
+  # Step 2 - 학습/평가 데이터 분리 변환 (기본 80/20 stratified split)
+  python prepare_bfcl_data.py convert \\
+    --results-path ./eval_results.json \\
+    --prompts-path ./bfcl_data/prompts.json \\
+    --output-dir ./bfcl_data \\
+    --strong-model qwen3.5-9b \\
+    --weak-model qwen3.5-2b \\
+    --train-ratio 0.8
+
+출력 파일:
+  bfcl_data/train_data.json  → train_matrix_factorization.py 입력
+  bfcl_data/test_data.json   → BFCLBenchmark 입력
 
 eval_results.json 형식 (모델 실행 후 직접 생성):
   [
     {
       "id": "live_simple_0",
-      "prompt": "...",
       "qwen3.5-2b_pass": true,
-      "qwen3.5-9b_pass": true
+      "qwen3.5-9b_pass": false
     },
     ...
   ]
@@ -32,34 +36,34 @@ eval_results.json 형식 (모델 실행 후 직접 생성):
 import argparse
 import json
 import os
+import random
 
 import numpy as np
-from datasets import concatenate_datasets, load_dataset
+from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 
-# BFCL v1, v2, v3의 주요 split 이름
+# BFCL v1, v2, v3 split 목록 (버전 태그 포함)
 BFCL_SPLITS = [
     # V1 - expert curated, single-turn
-    "gorilla_openfunctions_v1_test_simple",
-    "gorilla_openfunctions_v1_test_multiple_function",
-    "gorilla_openfunctions_v1_test_parallel_function",
-    "gorilla_openfunctions_v1_test_parallel_multiple_function",
-    "gorilla_openfunctions_v1_test_relevance",
+    ("v1", "gorilla_openfunctions_v1_test_simple"),
+    ("v1", "gorilla_openfunctions_v1_test_multiple_function"),
+    ("v1", "gorilla_openfunctions_v1_test_parallel_function"),
+    ("v1", "gorilla_openfunctions_v1_test_parallel_multiple_function"),
+    ("v1", "gorilla_openfunctions_v1_test_relevance"),
     # V2 - community contributed (live)
-    "live_simple",
-    "live_multiple",
-    "live_parallel",
-    "live_parallel_multiple",
-    "live_relevance",
-    "live_irrelevance",
+    ("v2", "live_simple"),
+    ("v2", "live_multiple"),
+    ("v2", "live_parallel"),
+    ("v2", "live_parallel_multiple"),
+    ("v2", "live_relevance"),
+    ("v2", "live_irrelevance"),
     # V3 - multi-turn
-    "multi_turn_base",
-    "multi_turn_miss_func",
-    "multi_turn_miss_param",
-    "multi_turn_long_context",
+    ("v3", "multi_turn_base"),
+    ("v3", "multi_turn_miss_func"),
+    ("v3", "multi_turn_miss_param"),
+    ("v3", "multi_turn_long_context"),
 ]
 
 
@@ -83,13 +87,14 @@ def load_bfcl_prompts() -> list[dict]:
     prompts = []
     seen_ids = set()
 
-    for split in BFCL_SPLITS:
+    for version, split in BFCL_SPLITS:
         try:
             ds = load_dataset(BFCL_DATASET, split=split)
         except Exception as e:
             print(f"  [skip] {split}: {e}")
             continue
 
+        added = 0
         for sample in ds:
             sample_id = sample.get("id", "")
             if sample_id in seen_ids:
@@ -102,12 +107,14 @@ def load_bfcl_prompts() -> list[dict]:
                     {
                         "idx": len(prompts),
                         "id": sample_id,
-                        "split": split,
+                        "bfcl_version": version,
+                        "bfcl_split": split,
                         "prompt": prompt,
                     }
                 )
+                added += 1
 
-        print(f"  [ok] {split}: +{len(ds)} samples (total unique: {len(prompts)})")
+        print(f"  [ok] {split}: +{added} (total unique: {len(prompts)})")
 
     return prompts
 
@@ -133,68 +140,137 @@ def generate_embeddings(prompts: list[dict], output_dir: str):
     print(f"Saved prompts    → {prompts_path}")
 
 
-def convert_results_to_pairwise(
+def stratified_split(items: list, key_fn, train_ratio: float, seed: int = 42):
+    """key_fn(item) 값을 기준으로 계층적 분리를 수행한다."""
+    from collections import defaultdict
+
+    buckets = defaultdict(list)
+    for item in items:
+        buckets[key_fn(item)].append(item)
+
+    rng = random.Random(seed)
+    train, test = [], []
+    for bucket in buckets.values():
+        rng.shuffle(bucket)
+        n_train = max(1, round(len(bucket) * train_ratio))
+        train.extend(bucket[:n_train])
+        test.extend(bucket[n_train:])
+
+    return train, test
+
+
+def convert_results_to_split_data(
     results_path: str,
     prompts_path: str,
-    output_path: str,
+    output_dir: str,
     strong_model: str,
     weak_model: str,
+    train_ratio: float = 0.8,
+    seed: int = 42,
 ):
     """
-    모델 평가 결과(pass/fail)를 MF 학습용 pairwise JSON으로 변환한다.
+    모델 평가 결과를 train_data.json(학습용)과 test_data.json(평가용)으로 변환한다.
 
-    입력 results_path JSON 형식:
-      [{"id": "...", "qwen3.5-2b_pass": true, "qwen3.5-9b_pass": false}, ...]
+    분리 전략: BFCL split 카테고리 기준 stratified split
+      - 각 카테고리(live_simple 등)에서 train_ratio 비율만큼 학습에 사용
+      - 나머지는 평가 전용 → BFCLBenchmark에서 사용
 
-    출력 형식 (train_matrix_factorization.py 호환):
+    train_data.json 형식 (train_matrix_factorization.py 호환):
       [{"model_a": "qwen3.5-2b", "model_b": "qwen3.5-9b",
         "winner": "model_b", "idx": 0}, ...]
+
+    test_data.json 형식 (BFCLBenchmark 호환):
+      [{"idx": 0, "id": "...", "prompt": "...",
+        "bfcl_split": "live_simple",
+        "qwen3.5-2b": false, "qwen3.5-9b": true}, ...]
     """
     with open(results_path) as f:
         results = json.load(f)
     with open(prompts_path) as f:
         prompts = json.load(f)
 
-    id_to_idx = {p["id"]: p["idx"] for p in prompts}
-
+    id_to_prompt = {p["id"]: p for p in prompts}
     weak_key = f"{weak_model}_pass"
     strong_key = f"{strong_model}_pass"
 
-    pairs = []
+    # 각 샘플을 레이블링하고 필터링
+    labeled = []
     skipped = 0
     for r in results:
         weak_pass = r.get(weak_key, False)
         strong_pass = r.get(strong_key, False)
 
         if weak_pass and strong_pass:
-            winner = "model_a"  # weak 로 충분
+            winner = "model_a"  # weak으로 충분
         elif not weak_pass and strong_pass:
             winner = "model_b"  # strong 필요
         else:
-            # 둘 다 실패하거나 weak만 성공하는 케이스는 라우팅 신호가 약해 제거
+            # 둘 다 실패 or weak만 성공 → 라우팅 신호 약해 제거
             skipped += 1
             continue
 
-        idx = id_to_idx.get(r.get("id", ""), -1)
-        if idx == -1:
+        prompt_meta = id_to_prompt.get(r.get("id", ""))
+        if prompt_meta is None:
             skipped += 1
             continue
 
-        pairs.append(
+        labeled.append(
             {
-                "model_a": weak_model,
-                "model_b": strong_model,
-                "winner": winner,
-                "idx": idx,
+                "idx": prompt_meta["idx"],
+                "id": prompt_meta["id"],
+                "prompt": prompt_meta["prompt"],
+                "bfcl_split": prompt_meta["bfcl_split"],
+                "bfcl_version": prompt_meta["bfcl_version"],
+                weak_model: weak_pass,
+                strong_model: strong_pass,
+                "_winner": winner,
             }
         )
 
-    with open(output_path, "w") as f:
-        json.dump(pairs, f, ensure_ascii=False, indent=2)
+    # BFCL split 카테고리 기준 stratified split
+    train_items, test_items = stratified_split(
+        labeled, key_fn=lambda x: x["bfcl_split"], train_ratio=train_ratio, seed=seed
+    )
 
-    print(f"Pairwise pairs : {len(pairs)}")
-    print(f"Skipped        : {skipped}")
-    print(f"Saved          → {output_path}")
+    # train_data.json: winner + idx만 저장 (train_matrix_factorization.py 호환)
+    train_data = [
+        {
+            "model_a": weak_model,
+            "model_b": strong_model,
+            "winner": item["_winner"],
+            "idx": item["idx"],
+        }
+        for item in train_items
+    ]
+
+    # test_data.json: 평가에 필요한 전체 정보 저장
+    test_data = [
+        {k: v for k, v in item.items() if k != "_winner"}
+        for item in test_items
+    ]
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    train_path = os.path.join(output_dir, "train_data.json")
+    test_path = os.path.join(output_dir, "test_data.json")
+
+    with open(train_path, "w") as f:
+        json.dump(train_data, f, ensure_ascii=False, indent=2)
+    with open(test_path, "w") as f:
+        json.dump(test_data, f, ensure_ascii=False, indent=2)
+
+    # 버전별 분포 출력
+    from collections import Counter
+    train_versions = Counter(item["bfcl_version"] for item in train_items)
+    test_versions = Counter(item["bfcl_version"] for item in test_items)
+
+    print(f"\nTotal labeled  : {len(labeled)}  (skipped: {skipped})")
+    print(f"Train split    : {len(train_data)} ({train_ratio*100:.0f}%)")
+    print(f"  by version   : {dict(train_versions)}")
+    print(f"Test split     : {len(test_data)} ({(1-train_ratio)*100:.0f}%)")
+    print(f"  by version   : {dict(test_versions)}")
+    print(f"\nSaved train    → {train_path}")
+    print(f"Saved test     → {test_path}")
 
 
 if __name__ == "__main__":
@@ -205,15 +281,22 @@ if __name__ == "__main__":
     embed_parser = subparsers.add_parser("embed", help="BFCL 프롬프트 임베딩 생성")
     embed_parser.add_argument("--output-dir", type=str, default="./bfcl_data")
 
-    # Step 2: convert
+    # Step 2: convert (train/test split 포함)
     convert_parser = subparsers.add_parser(
-        "convert", help="모델 평가 결과 → pairwise 학습 데이터 변환"
+        "convert", help="모델 평가 결과 → train/test 학습 데이터 변환"
     )
     convert_parser.add_argument("--results-path", type=str, required=True)
     convert_parser.add_argument("--prompts-path", type=str, required=True)
-    convert_parser.add_argument("--output-path", type=str, required=True)
+    convert_parser.add_argument("--output-dir", type=str, default="./bfcl_data")
     convert_parser.add_argument("--strong-model", type=str, default="qwen3.5-9b")
     convert_parser.add_argument("--weak-model", type=str, default="qwen3.5-2b")
+    convert_parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=0.8,
+        help="학습 데이터 비율 (기본값: 0.8 = 80/20 split)",
+    )
+    convert_parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
 
@@ -224,12 +307,14 @@ if __name__ == "__main__":
         generate_embeddings(prompts, args.output_dir)
 
     elif args.command == "convert":
-        convert_results_to_pairwise(
+        convert_results_to_split_data(
             args.results_path,
             args.prompts_path,
-            args.output_path,
+            args.output_dir,
             args.strong_model,
             args.weak_model,
+            args.train_ratio,
+            args.seed,
         )
 
     else:
