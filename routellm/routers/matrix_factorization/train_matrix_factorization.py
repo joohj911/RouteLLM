@@ -64,13 +64,17 @@ class MFModel_Train(torch.nn.Module):
         self.Q.weight.data.copy_(torch.tensor(embeddings, dtype=torch.float32))
 
         if self.use_proj:
-            self.text_proj = torch.nn.Linear(text_dim, dim, bias=False)
+            # Sequential wrapper matches MFModel's state dict keys (text_proj.0.weight)
+            self.text_proj = torch.nn.Sequential(
+                torch.nn.Linear(text_dim, dim, bias=False)
+            )
         else:
             assert (
                 text_dim == dim
             ), f"text_dim {text_dim} must be equal to dim {dim} if not using projection"
 
-        self.classifier = nn.Linear(dim, num_classes, bias=False)
+        # Sequential wrapper matches MFModel's state dict keys (classifier.0.weight)
+        self.classifier = torch.nn.Sequential(nn.Linear(dim, num_classes, bias=False))
 
     def get_device(self):
         return self.P.weight.device

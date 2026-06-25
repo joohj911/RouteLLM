@@ -1,5 +1,6 @@
 import abc
 import functools
+import os
 import random
 
 import numpy as np
@@ -223,14 +224,27 @@ class MatrixFactorizationRouter(Router):
     ):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.model = MFModel.from_pretrained(
-            checkpoint_path,
-            dim=hidden_size,
-            num_models=num_models,
-            text_dim=text_dim,
-            num_classes=num_classes,
-            use_proj=use_proj,
-        )
+        if os.path.isfile(checkpoint_path):
+            # Local .pt file saved by train_matrix_factorization.py
+            self.model = MFModel(
+                dim=hidden_size,
+                num_models=num_models,
+                text_dim=text_dim,
+                num_classes=num_classes,
+                use_proj=use_proj,
+            )
+            state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+            self.model.load_state_dict(state)
+        else:
+            # HuggingFace Hub repo ID or local directory
+            self.model = MFModel.from_pretrained(
+                checkpoint_path,
+                dim=hidden_size,
+                num_models=num_models,
+                text_dim=text_dim,
+                num_classes=num_classes,
+                use_proj=use_proj,
+            )
         self.model = self.model.eval().to(device)
         self.strong_model_id = MODEL_IDS[strong_model]
         self.weak_model_id = MODEL_IDS[weak_model]
