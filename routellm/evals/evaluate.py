@@ -9,7 +9,7 @@ import yaml
 from pandarallel import pandarallel
 
 from routellm.controller import Controller
-from routellm.evals.benchmarks import GSM8K, MMLU, MTBench
+from routellm.evals.benchmarks import BFCLBenchmark, GSM8K, MMLU, MTBench
 from routellm.evals.mmlu.domains import ALL_MMLU_DOMAINS
 from routellm.routers.routers import ROUTER_CLS
 
@@ -160,7 +160,14 @@ if __name__ == "__main__":
             "mmlu",
             "mt-bench",
             "gsm8k",
+            "bfcl",
         ],
+    )
+    parser.add_argument(
+        "--test-data",
+        type=str,
+        default=None,
+        help="bfcl 벤치마크 전용: prepare_bfcl_data.py convert 가 생성한 test_data.json 경로",
     )
     parser.add_argument(
         "--output",
@@ -212,6 +219,13 @@ if __name__ == "__main__":
     elif args.benchmark == "gsm8k":
         print("Running eval for GSM8k.")
         benchmark = GSM8K(controller.model_pair, args.overwrite_cache)
+    elif args.benchmark == "bfcl":
+        if args.test_data is None:
+            raise ValueError("--test-data 경로를 지정해야 합니다 (bfcl 벤치마크).")
+        print("Running eval for BFCL.")
+        benchmark = BFCLBenchmark(
+            controller.model_pair, args.test_data, args.overwrite_cache
+        )
     else:
         raise ValueError(f"Invalid benchmark {args.benchmark}")
 
