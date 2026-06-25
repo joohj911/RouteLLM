@@ -20,7 +20,8 @@ dependencies = [
 	'openai',
 	'transformers',
 	'datasets',
-	'litellm'
+	'litellm',
+	'sentence-transformers'
 ]
 
 [project.optional-dependencies]
