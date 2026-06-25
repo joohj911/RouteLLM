@@ -210,8 +210,8 @@ if __name__ == "__main__":
         default=psutil.cpu_count(logical=False),
         help="Number of cores to use, all by default.",
     )
-    parser.add_argument("--strong-model", type=str, default="Qwen/Qwen3.5-9B")
-    parser.add_argument("--weak-model", type=str, default="Qwen/Qwen3.5-2B")
+    parser.add_argument("--strong-model", type=str, default="qwen3.5-9b")
+    parser.add_argument("--weak-model", type=str, default="qwen3.5-2b")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--num-results", type=int, default=10)
     parser.add_argument("--random-iters", type=int, default=10)

@@ -462,7 +462,7 @@ if __name__ == "__main__":
     print(f"Prompts to evaluate: {len(prompts)}")
 
     # BFCL 전체 데이터 로드 (function 정의 + ground_truth 포함)
-    print("\nLoading BFCL dataset from HuggingFace ...")
+    print("\nLoading BFCL dataset from GitHub ...")
     id_to_sample = load_bfcl_by_id()
 
     # weak 모델 평가 (--weak-device, 기본 cuda:0)
