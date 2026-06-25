@@ -45,10 +45,13 @@ from sentence_transformers import SentenceTransformer
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 
 # BFCL v4 split 목록. HuggingFace split 이름은 "BFCL_v4_{category}" 패턴.
+# 파일 목록 출처: gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/
 # 존재하지 않는 split은 load_bfcl_prompts()에서 자동으로 skip됨.
 #
-# 카테고리 출처: gorilla/berkeley-function-call-leaderboard/bfcl_eval/constants/category_mapping.py
-# agentic 카테고리(memory_*, web_search_*)는 외부 백엔드가 필요해 제외.
+# 제외한 카테고리 (외부 인프라 필요):
+#   BFCL_v4_memory     : key-value / vector / rec_sum 메모리 백엔드 필요
+#   BFCL_v4_web_search : 실시간 웹 검색 API 필요
+#   BFCL_v4_format_sensitivity : 비채점(non-scoring) 카테고리
 BFCL_SPLITS = [
     # Non-live: 전문가 큐레이션, single-turn
     ("non_live", "BFCL_v4_simple_python"),

@@ -33,7 +33,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 
 # BFCL v4 split 이름. prepare_bfcl_data.py의 BFCL_SPLITS와 동일하게 유지.
-# agentic 카테고리(memory_*, web_search_*)는 외부 백엔드 필요로 제외.
+# 파일 목록 출처: gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/
+# 제외: BFCL_v4_memory (메모리 백엔드 필요), BFCL_v4_web_search (웹 검색 API 필요),
+#        BFCL_v4_format_sensitivity (비채점)
 BFCL_SPLITS = [
     # Non-live
     "BFCL_v4_simple_python",
