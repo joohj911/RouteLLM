@@ -24,13 +24,17 @@ BFCL 카테고리별 평가 기준:
 import argparse
 import json
 import re
+import urllib.request
 
 import torch
-from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+# BFCL v4 데이터는 Gorilla GitHub 레포에서 직접 다운로드.
+GORILLA_RAW_BASE = (
+    "https://raw.githubusercontent.com/ShishirPatil/gorilla/main"
+    "/berkeley-function-call-leaderboard/bfcl_eval/data"
+)
 
 # BFCL v4 split 이름. prepare_bfcl_data.py의 BFCL_SPLITS와 동일하게 유지.
 # 파일 목록 출처: gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/
@@ -107,16 +111,27 @@ def unload_model(model):
 # BFCL 데이터 로드
 # ─────────────────────────────────────────────
 
+def _fetch_split(split: str) -> list[dict]:
+    """GitHub raw URL에서 BFCL split JSON을 다운로드하여 반환."""
+    url = f"{GORILLA_RAW_BASE}/{split}.json"
+    with urllib.request.urlopen(url) as resp:
+        content = resp.read().decode("utf-8")
+    data = json.loads(content)
+    if isinstance(data, list):
+        return data
+    return [json.loads(line) for line in content.strip().splitlines() if line.strip()]
+
+
 def load_bfcl_by_id() -> dict:
     """모든 BFCL split을 로드하여 id → sample 딕셔너리로 반환."""
     id_to_sample = {}
     for split in BFCL_SPLITS:
         try:
-            ds = load_dataset(BFCL_DATASET, name=split, split="train")
+            samples = _fetch_split(split)
         except Exception as e:
             print(f"  [skip] {split}: {e}")
             continue
-        for sample in ds:
+        for sample in samples:
             id_to_sample[sample["id"]] = sample
     print(f"Loaded {len(id_to_sample)} BFCL samples total.")
     return id_to_sample
