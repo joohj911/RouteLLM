@@ -31,7 +31,7 @@ serve = ["fastapi", "shortuuid", "uvicorn"]
 # sglang is only used in legacy generate_responses.py scripts (MMLU/GSM8K precomputation).
 # It is NOT part of the BFCL pipeline. Install separately if needed:
 #   pip install "sglang[all]" --find-links https://flashinfer.ai/whl/cu124/torch2.5/
-eval = ["matplotlib", "pandarallel", "tiktoken"]
+eval = ["matplotlib", "pandarallel"]
 # bitsandbytes is required only when using --load-in-4bit in eval_bfcl_models.py
 quant = ["bitsandbytes>=0.43.0"]
 dev = ["black", "isort", "pre-commit"]

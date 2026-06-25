@@ -9,8 +9,7 @@ import yaml
 from pandarallel import pandarallel
 
 from routellm.controller import Controller
-from routellm.evals.benchmarks import BFCLBenchmark, GSM8K, MMLU, MTBench
-from routellm.evals.mmlu.domains import ALL_MMLU_DOMAINS
+from routellm.evals.benchmarks import BFCLBenchmark
 from routellm.routers.routers import ROUTER_CLS
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -184,12 +183,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--benchmark",
         type=str,
-        choices=[
-            "mmlu",
-            "mt-bench",
-            "gsm8k",
-            "bfcl",
-        ],
+        choices=["bfcl"],
+        default="bfcl",
     )
     parser.add_argument(
         "--test-data",
@@ -215,12 +210,8 @@ if __name__ == "__main__":
         default=psutil.cpu_count(logical=False),
         help="Number of cores to use, all by default.",
     )
-    parser.add_argument("--strong-model", type=str, default="gpt-4-1106-preview")
-    parser.add_argument(
-        "--weak-model",
-        type=str,
-        default="mistralai/Mixtral-8x7B-Instruct-v0.1",
-    )
+    parser.add_argument("--strong-model", type=str, default="Qwen/Qwen3.5-9B")
+    parser.add_argument("--weak-model", type=str, default="Qwen/Qwen3.5-2B")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--num-results", type=int, default=10)
     parser.add_argument("--random-iters", type=int, default=10)
@@ -237,25 +228,12 @@ if __name__ == "__main__":
         progress_bar=True,
     )
 
-    if args.benchmark == "mmlu":
-        print("Running eval for full MMLU.")
-        mmlu_domains = ALL_MMLU_DOMAINS
-        benchmark = MMLU(mmlu_domains, controller.model_pair, args.overwrite_cache)
-    elif args.benchmark == "mt-bench":
-        print("Running eval for MT Bench.")
-        benchmark = MTBench(controller.model_pair, args.overwrite_cache)
-    elif args.benchmark == "gsm8k":
-        print("Running eval for GSM8k.")
-        benchmark = GSM8K(controller.model_pair, args.overwrite_cache)
-    elif args.benchmark == "bfcl":
-        if args.test_data is None:
-            raise ValueError("--test-data path is required for bfcl benchmark.")
-        print("Running eval for BFCL.")
-        benchmark = BFCLBenchmark(
-            controller.model_pair, args.test_data, args.overwrite_cache
-        )
-    else:
-        raise ValueError(f"Invalid benchmark {args.benchmark}")
+    if args.test_data is None:
+        raise ValueError("--test-data path is required.")
+    print("Running eval for BFCL.")
+    benchmark = BFCLBenchmark(
+        controller.model_pair, args.test_data, args.overwrite_cache
+    )
 
     all_results = pd.DataFrame()
     for router in controller.routers:

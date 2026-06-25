@@ -32,22 +32,31 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 
+# BFCL v4 split 이름. prepare_bfcl_data.py의 BFCL_SPLITS와 동일하게 유지.
+# 파일 목록 출처: gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/
+# 제외: BFCL_v4_memory (메모리 백엔드 필요), BFCL_v4_web_search (웹 검색 API 필요),
+#        BFCL_v4_format_sensitivity (비채점)
 BFCL_SPLITS = [
-    "gorilla_openfunctions_v1_test_simple",
-    "gorilla_openfunctions_v1_test_multiple_function",
-    "gorilla_openfunctions_v1_test_parallel_function",
-    "gorilla_openfunctions_v1_test_parallel_multiple_function",
-    "gorilla_openfunctions_v1_test_relevance",
-    "live_simple",
-    "live_multiple",
-    "live_parallel",
-    "live_parallel_multiple",
-    "live_relevance",
-    "live_irrelevance",
-    "multi_turn_base",
-    "multi_turn_miss_func",
-    "multi_turn_miss_param",
-    "multi_turn_long_context",
+    # Non-live
+    "BFCL_v4_simple_python",
+    "BFCL_v4_simple_java",
+    "BFCL_v4_simple_javascript",
+    "BFCL_v4_multiple",
+    "BFCL_v4_parallel",
+    "BFCL_v4_parallel_multiple",
+    "BFCL_v4_irrelevance",
+    # Live
+    "BFCL_v4_live_simple",
+    "BFCL_v4_live_multiple",
+    "BFCL_v4_live_parallel",
+    "BFCL_v4_live_parallel_multiple",
+    "BFCL_v4_live_relevance",
+    "BFCL_v4_live_irrelevance",
+    # Multi-turn
+    "BFCL_v4_multi_turn_base",
+    "BFCL_v4_multi_turn_miss_func",
+    "BFCL_v4_multi_turn_miss_param",
+    "BFCL_v4_multi_turn_long_context",
 ]
 
 
