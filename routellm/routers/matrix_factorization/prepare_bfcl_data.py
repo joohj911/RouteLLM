@@ -98,7 +98,7 @@ def load_bfcl_prompts() -> list[dict]:
 
     for category, split in BFCL_SPLITS:
         try:
-            ds = load_dataset(BFCL_DATASET, split=split)
+            ds = load_dataset(BFCL_DATASET, name=split, split="train")
         except Exception as e:
             print(f"  [skip] {split}: {e}")
             continue
