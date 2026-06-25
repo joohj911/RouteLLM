@@ -2,31 +2,33 @@
 
 RouteLLM is a framework for training and evaluating LLM routers that intelligently route queries between a strong model and a weak model based on query difficulty.
 
-This fork focuses on **agent/tool-calling routing** using [Qwen3.5](https://huggingface.co/Qwen) as the model pair and [BFCL](https://huggingface.co/datasets/gorilla-llm/Berkeley-Function-Calling-Leaderboard) as the evaluation benchmark, with local embeddings via `intfloat/multilingual-e5-small`.
+This fork focuses on **agent/tool-calling routing** using [Qwen3.5](https://huggingface.co/Qwen) as the model pair and [BFCL v4](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) as the evaluation benchmark, with local embeddings via `intfloat/multilingual-e5-small`.
 
 ## Overview
 
-- **Weak model**: `Qwen/Qwen3.5-2B` — fast and cheap
+- **Weak model**: `Qwen/Qwen3.5-2B` — fast, handles simple tool calls
 - **Strong model**: `Qwen/Qwen3.5-9B` — higher accuracy on complex tool calls
-- **Router**: Matrix Factorization (`mf`) trained on BFCL pass/fail labels
-- **Embeddings**: `intfloat/multilingual-e5-small` (384-dim, fully local, no API key needed)
-- **Benchmark**: BFCL v1 + v2 + v3 (~4,500 unique tool-calling samples)
+- **Router**: Matrix Factorization (`mf`) trained on BFCL v4 pass/fail labels
+- **Embeddings**: `intfloat/multilingual-e5-small` (384-dim, fully local, no API key)
+- **Benchmark**: BFCL v4 (17 categories: non-live, live, multi-turn)
 
-The router learns which queries are hard enough to require the 9B model and routes the rest to the 2B model, reducing inference cost while preserving tool-calling accuracy.
+The router learns which queries require the 9B model and routes the rest to the 2B model, reducing inference cost while preserving tool-calling accuracy.
 
 ## Installation
 
 ```bash
 git clone https://github.com/joohj911/RouteLLM.git
 cd RouteLLM
-pip install -e ".[serve,eval]"
+pip install -e ".[eval]"
+# Optional: 4-bit quantization for low-VRAM eval
+pip install -e ".[eval,quant]"
 ```
 
 ## Full Pipeline
 
 ### Step 1: Generate BFCL Embeddings
 
-Download BFCL v1/v2/v3 from HuggingFace and generate multilingual-e5-small embeddings:
+Download BFCL v4 from GitHub and generate multilingual-e5-small embeddings:
 
 ```bash
 python routellm/routers/matrix_factorization/prepare_bfcl_data.py embed \
@@ -39,26 +41,30 @@ Output:
 
 ### Step 2: Evaluate Models on BFCL
 
-Run both Qwen3.5-2B and Qwen3.5-9B on the BFCL prompts to get pass/fail results:
+Run both models on the BFCL prompts to get pass/fail results. Each model runs on its own GPU:
 
 ```bash
 python routellm/routers/matrix_factorization/eval_bfcl_models.py \
   --prompts-path ./bfcl_data/prompts.json \
   --output-path ./eval_results.json \
   --weak-model Qwen/Qwen3.5-2B \
-  --strong-model Qwen/Qwen3.5-9B
+  --strong-model Qwen/Qwen3.5-9B \
+  --weak-device cuda:0 \
+  --strong-device cuda:1
 ```
 
 Options:
-- `--load-in-4bit` — enable 4-bit quantization (requires `bitsandbytes`)
+- `--weak-device` / `--strong-device` — which GPU to use for each model (default: `cuda:0` / `cuda:1`)
+- `--load-in-4bit` — 4-bit quantization for low-VRAM setups (requires `bitsandbytes`)
 - `--max-new-tokens` — max generation length (default: 512)
-- `--device` — `cuda` or `cpu` (default: `cuda`)
 
-Output: `eval_results.json` with per-sample pass/fail for each model.
+Output: `eval_results.json` — per-sample pass/fail for each model.
+
+> **Note:** The script prints the short model names used for the next step, e.g. `--weak-model qwen3.5-2b --strong-model qwen3.5-9b`.
 
 ### Step 3: Convert to Train/Test Split
 
-Split the evaluation results into training data (80%) and test data (20%) using stratified split by BFCL category:
+Split results into training data (80%) and test data (20%) using stratified split by BFCL category:
 
 ```bash
 python routellm/routers/matrix_factorization/prepare_bfcl_data.py convert \
@@ -71,39 +77,42 @@ python routellm/routers/matrix_factorization/prepare_bfcl_data.py convert \
 ```
 
 Output:
-- `bfcl_data/train_data.json` — training data for the MF router
-- `bfcl_data/test_data.json` — held-out test data for evaluation
+- `bfcl_data/train_data.json` — training labels for the MF router
+- `bfcl_data/test_data.json` — held-out test set for evaluation
 
-Training labels: samples where only the strong model passes are labeled "route to strong"; samples where both pass are labeled "route to weak". Samples where both fail or only the weak model passes are discarded (no routing signal).
+**Labeling rule:**
+| Weak passes | Strong passes | Label |
+|---|---|---|
+| ✓ | ✓ | Route to weak (weak is sufficient) |
+| ✗ | ✓ | Route to strong (strong is needed) |
+| ✓ or ✗ | ✗ | Discarded (no routing signal) |
 
 ### Step 4: Train the MF Router
 
 ```bash
 python routellm/routers/matrix_factorization/train_matrix_factorization.py \
-  --data-path ./bfcl_data/train_data.json \
-  --embeddings-path ./bfcl_data/embeddings.npy \
+  --train-data ./bfcl_data/train_data.json \
+  --npy-path ./bfcl_data/embeddings.npy \
   --output-path ./bfcl_mf_model.pt \
-  --epochs 30 \
-  --batch-size 64 \
-  --text-dim 384
+  --num-epochs 100 \
+  --dim 128 \
+  --text-dim 384 \
+  --batch-size 64
 ```
+
+The checkpoint is saved without the prompt embedding matrix (not needed at inference time).
 
 ### Step 5: Evaluate the Router
 
-Evaluate the trained router on the BFCL test set. The output shows:
-- **Router pass rate** at each routing threshold
-- **Weak model only** pass rate (baseline)
-- **Strong model only** pass rate (ceiling)
-- **% routed to weak model** at each threshold
+Evaluate on the BFCL test set. Reports pass rate for weak-only, strong-only, and the router at each threshold:
 
 ```bash
 python -m routellm.evals.evaluate \
   --routers mf \
-  --benchmark bfcl \
+  --mf-checkpoint ./bfcl_mf_model.pt \
   --test-data ./bfcl_data/test_data.json \
   --strong-model qwen3.5-9b \
-  --weak-model qwen3.5-2b \
-  --config config.example.yaml
+  --weak-model qwen3.5-2b
 ```
 
 Example output:
@@ -123,17 +132,41 @@ BFCL Routing Summary
 ================================================================
 ```
 
-## Using the Router in Code
+## Local Inference (Two-GPU Setup)
 
-Once trained, use the MF router as a drop-in replacement via the Python SDK:
+For production use, load both models locally with `LocalController`. Each model is pinned to its own GPU — no per-request model loading:
 
 ```python
-import yaml
+from routellm.local_pipeline import LocalController
+
+controller = LocalController(
+    routers=["mf"],
+    strong_model="Qwen/Qwen3.5-9B",
+    weak_model="Qwen/Qwen3.5-2B",
+    strong_device="cuda:1",
+    weak_device="cuda:0",
+    config={"mf": {"checkpoint_path": "./bfcl_mf_model.pt", "text_dim": 384}},
+)
+
+response = controller.completion(
+    router="mf",
+    threshold=0.3,   # tune based on desired strong model call %
+    messages=[{"role": "user", "content": "What's the weather in Seoul?"}],
+    tools=[...],     # OpenAI tool format
+)
+print(response["choices"][0]["message"])
+```
+
+## Using the Router via API
+
+Use the router against any OpenAI-compatible API endpoint:
+
+```python
 from routellm.controller import Controller
 
 controller = Controller(
     routers=["mf"],
-    config=yaml.safe_load(open("config.example.yaml")),
+    config={"mf": {"checkpoint_path": "./bfcl_mf_model.pt", "text_dim": 384}},
     strong_model="qwen3.5-9b",
     weak_model="qwen3.5-2b",
 )
@@ -144,22 +177,9 @@ response = controller.chat.completions.create(
 )
 ```
 
-The `model` field format is `router-[ROUTER_NAME]-[THRESHOLD]`. Higher threshold = fewer strong model calls.
-
-## Threshold Calibration
-
-Calibrate the threshold so that a specific percentage of queries go to the strong model:
-
-```bash
-python -m routellm.calibrate_threshold \
-  --routers mf \
-  --strong-model-pct 0.3 \
-  --config config.example.yaml
-```
+The `model` field format is `router-[ROUTER_NAME]-[THRESHOLD]`.
 
 ## OpenAI-Compatible Server
-
-Launch a server compatible with any OpenAI client:
 
 ```bash
 python -m routellm.openai_server \
@@ -171,9 +191,10 @@ python -m routellm.openai_server \
 
 ## Configuration
 
-Router configuration is specified in a YAML file and passed via `--config`. See `config.example.yaml` for the format. The `mf` router accepts:
+For `evaluate.py` and the OpenAI server, router configuration is passed via `--config` YAML or (for the `mf` router) via `--mf-checkpoint` shortcut:
 
 ```yaml
+# config.example.yaml
 mf:
   checkpoint_path: ./bfcl_mf_model.pt
   text_dim: 384
@@ -185,7 +206,7 @@ mf:
 | Router | Description |
 |--------|-------------|
 | `mf` | Matrix factorization on prompt embeddings (recommended) |
-| `sw_ranking` | Weighted Elo based on prompt similarity |
+| `sw_ranking` | Weighted Elo based on prompt similarity (requires OpenAI API) |
 | `bert` | BERT classifier trained on preference data |
 | `causal_llm` | LLM-based classifier |
 | `random` | Random baseline |
@@ -194,7 +215,7 @@ mf:
 
 ### Adding a new router
 
-Implement the abstract `Router` class in `routellm/routers/routers.py` and add it to `ROUTER_CLS`. The only method to implement is `calculate_strong_win_rate(prompt)`, which returns a float in [0, 1] — if it exceeds the user-specified threshold, the request goes to the strong model.
+Implement the abstract `Router` class in `routellm/routers/routers.py` and add it to `ROUTER_CLS`. The only required method is `calculate_strong_win_rate(prompt) -> float`. If the returned value exceeds the user-specified threshold, the request goes to the strong model.
 
 ### Adding a new benchmark
 
