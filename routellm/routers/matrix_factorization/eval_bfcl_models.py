@@ -56,19 +56,32 @@ BFCL_SPLITS = [
 # ─────────────────────────────────────────────
 
 def load_model(model_name: str, device: str, load_in_4bit: bool):
-    print(f"\nLoading {model_name} (4-bit={load_in_4bit}) ...")
+    """
+    device 형식:
+      "cuda:0", "cuda:1"  → 해당 GPU에만 올림 (device_map={"": device})
+      "cuda"              → 가용 GPU 전체에 자동 분산 (device_map="auto")
+      "cpu"               → CPU
+    """
+    print(f"\nLoading {model_name} on {device} (4-bit={load_in_4bit}) ...")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
-    kwargs = {"trust_remote_code": True, "torch_dtype": torch.float16}
+    # H100은 bfloat16이 float16보다 빠르고 수치적으로 안정적
+    kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
     if load_in_4bit:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_compute_dtype=torch.bfloat16,
         )
-        kwargs["device_map"] = "auto"
+        kwargs["device_map"] = {"": device} if ":" in device else "auto"
+    elif device == "cpu":
+        kwargs["device_map"] = None
+    elif ":" in device:
+        # "cuda:0" / "cuda:1" → 단일 GPU에 고정
+        kwargs["device_map"] = {"": device}
     else:
-        kwargs["device_map"] = "auto" if device == "cuda" else None
+        # "cuda" → 가용 GPU 자동 분산
+        kwargs["device_map"] = "auto"
 
     model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
     model.eval()
@@ -329,7 +342,7 @@ def evaluate_model(
     max_new_tokens: int,
     device: str,
     load_in_4bit: bool,
-) -> dict[str, bool]:
+) -> tuple[dict[str, bool], str]:
     """한 모델을 전체 BFCL 샘플에 대해 평가하고 {id: pass} 딕셔너리 반환."""
     model, tokenizer = load_model(model_name, device, load_in_4bit)
 
@@ -399,7 +412,18 @@ if __name__ == "__main__":
         default="Qwen/Qwen3.5-9B",
         help="강한 모델 HuggingFace ID",
     )
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument(
+        "--weak-device",
+        type=str,
+        default="cuda:0",
+        help="weak 모델을 올릴 GPU (기본값: cuda:0)",
+    )
+    parser.add_argument(
+        "--strong-device",
+        type=str,
+        default="cuda:1",
+        help="strong 모델을 올릴 GPU (기본값: cuda:1)",
+    )
     parser.add_argument(
         "--load-in-4bit",
         action="store_true",
@@ -417,16 +441,16 @@ if __name__ == "__main__":
     print("\nLoading BFCL dataset from HuggingFace ...")
     id_to_sample = load_bfcl_by_id()
 
-    # weak 모델 평가
+    # weak 모델 평가 (--weak-device, 기본 cuda:0)
     weak_results, weak_col = evaluate_model(
         args.weak_model, prompts, id_to_sample,
-        args.max_new_tokens, args.device, args.load_in_4bit,
+        args.max_new_tokens, args.weak_device, args.load_in_4bit,
     )
 
-    # strong 모델 평가 (weak 언로드 후)
+    # strong 모델 평가 (--strong-device, 기본 cuda:1); weak 언로드 후 실행
     strong_results, strong_col = evaluate_model(
         args.strong_model, prompts, id_to_sample,
-        args.max_new_tokens, args.device, args.load_in_4bit,
+        args.max_new_tokens, args.strong_device, args.load_in_4bit,
     )
 
     # eval_results.json 생성
