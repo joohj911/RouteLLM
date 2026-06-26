@@ -69,14 +69,14 @@ BFCL_SPLITS = [
 # 모델 로드 / 언로드
 # ─────────────────────────────────────────────
 
-def load_model(model_name: str, device: str, load_in_4bit: bool, flash_attn: bool = False):
+def load_model(model_name: str, device: str, load_in_4bit: bool):
     """
     device 형식:
       "cuda:0", "cuda:1"  → 해당 GPU에만 올림 (device_map={"": device})
       "cuda"              → 가용 GPU 전체에 자동 분산 (device_map="auto")
       "cpu"               → CPU
     """
-    print(f"\nLoading {model_name} on {device} (4-bit={load_in_4bit}, flash_attn={flash_attn}) ...")
+    print(f"\nLoading {model_name} on {device} (4-bit={load_in_4bit}) ...")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     # 배치 생성 시 left padding 필요 (generation은 항상 시퀀스 끝에서 시작)
     tokenizer.padding_side = "left"
@@ -85,8 +85,9 @@ def load_model(model_name: str, device: str, load_in_4bit: bool, flash_attn: boo
 
     # H100은 bfloat16이 float16보다 빠르고 수치적으로 안정적
     kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
-    if flash_attn:
-        kwargs["attn_implementation"] = "flash_attention_2"
+    # SDPA: PyTorch 2.0+ 내장, flash-attn 패키지 없이도 H100에서 fused kernel 사용
+    if device != "cpu":
+        kwargs["attn_implementation"] = "sdpa"
     if load_in_4bit:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -362,11 +363,10 @@ def evaluate_model(
     device: str,
     load_in_4bit: bool,
     batch_size: int = 8,
-    flash_attn: bool = False,
     tqdm_position: int = 0,
 ) -> tuple[dict[str, bool], str]:
     """한 모델을 전체 BFCL 샘플에 대해 배치 추론으로 평가하고 {id: pass} 딕셔너리 반환."""
-    model, tokenizer = load_model(model_name, device, load_in_4bit, flash_attn)
+    model, tokenizer = load_model(model_name, device, load_in_4bit)
 
     results = {}
     failed_samples = 0
@@ -503,11 +503,6 @@ if __name__ == "__main__":
         help="배치 추론 크기 (기본값: 8). VRAM이 충분하면 16-32로 늘리면 더 빠름.",
     )
     parser.add_argument(
-        "--flash-attn",
-        action="store_true",
-        help="Flash Attention 2 활성화 (H100/A100 권장, ~20-40%% 속도 향상)",
-    )
-    parser.add_argument(
         "--concurrent",
         action="store_true",
         help="weak/strong 모델을 각 GPU에서 동시에 평가 (H100 x2 권장, ~2x 속도 향상)",
@@ -527,7 +522,6 @@ if __name__ == "__main__":
         max_new_tokens=args.max_new_tokens,
         load_in_4bit=args.load_in_4bit,
         batch_size=args.batch_size,
-        flash_attn=args.flash_attn,
     )
 
     if args.concurrent:
