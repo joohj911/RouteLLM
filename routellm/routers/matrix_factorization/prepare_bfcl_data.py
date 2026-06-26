@@ -14,8 +14,8 @@ BFCL v4 데이터로 MF 라우터 학습/평가 데이터를 준비하는 스크
     --results-path ./eval_results.json \\
     --prompts-path ./bfcl_data/prompts.json \\
     --output-dir ./bfcl_data \\
-    --strong-model qwen3.5-9b \\
-    --weak-model qwen3.5-2b \\
+    --strong-model Qwen/Qwen3.5-9B \\
+    --weak-model Qwen/Qwen3.5-2B \\
     --train-ratio 0.8
 
 출력 파일:
@@ -26,8 +26,8 @@ eval_results.json 형식 (모델 실행 후 직접 생성):
   [
     {
       "id": "BFCL_v4_live_simple_0",
-      "qwen3.5-2b_pass": true,
-      "qwen3.5-9b_pass": false
+      "Qwen/Qwen3.5-2B_pass": true,
+      "Qwen/Qwen3.5-9B_pass": false
     },
     ...
   ]
@@ -194,13 +194,13 @@ def convert_results_to_split_data(
       - 나머지는 평가 전용 → BFCLBenchmark에서 사용
 
     train_data.json 형식 (train_matrix_factorization.py 호환):
-      [{"model_a": "qwen3.5-2b", "model_b": "qwen3.5-9b",
+      [{"model_a": "Qwen/Qwen3.5-2B", "model_b": "Qwen/Qwen3.5-9B",
         "winner": "model_b", "idx": 0}, ...]
 
     test_data.json 형식 (BFCLBenchmark 호환):
       [{"idx": 0, "id": "...", "prompt": "...",
         "bfcl_split": "live_simple",
-        "qwen3.5-2b": false, "qwen3.5-9b": true}, ...]
+        "Qwen/Qwen3.5-2B": false, "Qwen/Qwen3.5-9B": true}, ...]
     """
     with open(results_path) as f:
         results = json.load(f)
@@ -314,8 +314,8 @@ if __name__ == "__main__":
     convert_parser.add_argument("--results-path", type=str, required=True)
     convert_parser.add_argument("--prompts-path", type=str, required=True)
     convert_parser.add_argument("--output-dir", type=str, default="./bfcl_data")
-    convert_parser.add_argument("--strong-model", type=str, default="qwen3.5-9b")
-    convert_parser.add_argument("--weak-model", type=str, default="qwen3.5-2b")
+    convert_parser.add_argument("--strong-model", type=str, default="Qwen/Qwen3.5-9B")
+    convert_parser.add_argument("--weak-model", type=str, default="Qwen/Qwen3.5-2B")
     convert_parser.add_argument(
         "--train-ratio",
         type=float,

@@ -68,13 +68,13 @@ The script prints a summary at the end:
 BFCL Evaluation Summary
 ============================================================
   Total samples :  1234
-              qwen3.5-0.6b :  612/1234  (49.6%)
-                qwen3.5-2b :  768/1234  (62.2%)
-                qwen3.5-9b : 1003/1234  (81.3%)
+      Qwen/Qwen3.5-0.6B :  612/1234  (49.6%)
+        Qwen/Qwen3.5-2B :  768/1234  (62.2%)
+        Qwen/Qwen3.5-9B : 1003/1234  (81.3%)
 ============================================================
 ```
 
-> **Note:** The script prints the short model names (HF ID after the `/`) used for the next step, e.g. `--weak-model qwen3.5-2b --strong-model qwen3.5-9b`.
+> **Note:** The script prints the full HuggingFace model IDs used in the next step, e.g. `--weak-model Qwen/Qwen3.5-2B --strong-model Qwen/Qwen3.5-9B`.
 
 ### Step 3: Convert to Train/Test Split
 
@@ -85,8 +85,8 @@ python routellm/routers/matrix_factorization/prepare_bfcl_data.py convert \
   --results-path ./eval_results.json \
   --prompts-path ./bfcl_data/prompts.json \
   --output-dir ./bfcl_data \
-  --weak-model qwen3.5-2b \
-  --strong-model qwen3.5-9b \
+  --weak-model Qwen/Qwen3.5-2B \
+  --strong-model Qwen/Qwen3.5-9B \
   --train-ratio 0.8
 ```
 
@@ -126,8 +126,8 @@ python -m routellm.evals.evaluate \
   --routers mf \
   --mf-checkpoint ./bfcl_mf_model.pt \
   --test-data ./bfcl_data/test_data.json \
-  --strong-model qwen3.5-9b \
-  --weak-model qwen3.5-2b
+  --strong-model Qwen/Qwen3.5-9B \
+  --weak-model Qwen/Qwen3.5-2B
 ```
 
 Example output:
@@ -136,8 +136,8 @@ Example output:
 ================================================================
 BFCL Routing Summary
 ================================================================
-  Weak model   (           qwen3.5-2b):   62.4%
-  Strong model (           qwen3.5-9b):   81.3%
+  Weak model   (      Qwen/Qwen3.5-2B):   62.4%
+  Strong model (      Qwen/Qwen3.5-9B):   81.3%
 
   Router             Threshold  Pass Rate    Weak%   Strong%
   ---------------------------------------------------------
@@ -182,8 +182,8 @@ from routellm.controller import Controller
 controller = Controller(
     routers=["mf"],
     config={"mf": {"checkpoint_path": "./bfcl_mf_model.pt", "text_dim": 384}},
-    strong_model="qwen3.5-9b",
-    weak_model="qwen3.5-2b",
+    strong_model="Qwen/Qwen3.5-9B",
+    weak_model="Qwen/Qwen3.5-2B",
 )
 
 response = controller.chat.completions.create(
@@ -199,8 +199,8 @@ The `model` field format is `router-[ROUTER_NAME]-[THRESHOLD]`.
 ```bash
 python -m routellm.openai_server \
   --routers mf \
-  --strong-model qwen3.5-9b \
-  --weak-model qwen3.5-2b \
+  --strong-model Qwen/Qwen3.5-9B \
+  --weak-model Qwen/Qwen3.5-2B \
   --config config.example.yaml
 ```
 

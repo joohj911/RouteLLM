@@ -366,7 +366,7 @@ def evaluate_model(
 
     results = {}
     failed_samples = 0
-    short_name = model_name.split("/")[-1].lower()
+    short_name = model_name  # full HF ID used as key throughout the pipeline
 
     valid = []
     for pm in prompts:

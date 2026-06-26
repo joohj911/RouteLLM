@@ -129,10 +129,10 @@ class MatrixFactorizationRouter(Router):
     def __init__(
         self,
         checkpoint_path,
-        strong_model="qwen3.5-9b",
-        weak_model="qwen3.5-2b",
+        strong_model="Qwen/Qwen3.5-9B",
+        weak_model="Qwen/Qwen3.5-2B",
         hidden_size=128,
-        num_models=66,
+        num_models=69,
         text_dim=384,
         num_classes=1,
         use_proj=True,

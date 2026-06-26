@@ -69,6 +69,10 @@ MODEL_IDS = {
     "zephyr-7b-beta": 63,
     "qwen3.5-2b": 64,
     "qwen3.5-9b": 65,
+    # Full HuggingFace model IDs (canonical form used in this fork)
+    "Qwen/Qwen3.5-0.6B": 66,
+    "Qwen/Qwen3.5-2B": 67,
+    "Qwen/Qwen3.5-9B": 68,
 }
 
 
