@@ -47,7 +47,7 @@ Pass any number of models to evaluate. Each model uses all available GPUs via `d
 python routellm/evals/eval_bfcl_models.py \
   --prompts-path ./bfcl_data/prompts.json \
   --output-path ./eval_results.json \
-  --models Qwen/Qwen3.5-0.6B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B
+  --models Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B
 ```
 
 Options:
@@ -67,7 +67,7 @@ The script prints a summary at the end:
 BFCL Evaluation Summary
 ============================================================
   Total samples :  1234
-      Qwen/Qwen3.5-0.6B :  612/1234  (49.6%)
+      Qwen/Qwen3.5-0.8B :  612/1234  (49.6%)
         Qwen/Qwen3.5-2B :  768/1234  (62.2%)
         Qwen/Qwen3.5-9B : 1003/1234  (81.3%)
 ============================================================
