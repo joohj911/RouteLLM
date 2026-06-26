@@ -213,7 +213,6 @@ For `evaluate.py` and the OpenAI server, router configuration is passed via `--c
 mf:
   checkpoint_path: ./bfcl_mf_model.pt
   text_dim: 384
-  num_models: 66
 ```
 
 ## Routers

@@ -14,7 +14,7 @@ from routellm.routers.causal_llm.llm_utils import (
     to_openai_api_messages,
 )
 from routellm.routers.causal_llm.model import CausalLLMClassifier
-from routellm.routers.matrix_factorization.model import MODEL_IDS, MFModel
+from routellm.routers.matrix_factorization.model import MFModel
 
 
 def no_parallel(cls):
@@ -132,7 +132,6 @@ class MatrixFactorizationRouter(Router):
         strong_model="Qwen/Qwen3.5-9B",
         weak_model="Qwen/Qwen3.5-2B",
         hidden_size=128,
-        num_models=69,
         text_dim=384,
         num_classes=1,
         use_proj=True,
@@ -141,28 +140,26 @@ class MatrixFactorizationRouter(Router):
 
         if os.path.isfile(checkpoint_path):
             # Local .pt file saved by train_matrix_factorization.py
+            # Format: {"state_dict": ..., "model_ids": {"ModelName": 0, ...}}
+            ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            model_ids = ckpt["model_ids"]
+            state = ckpt["state_dict"]
             self.model = MFModel(
                 dim=hidden_size,
-                num_models=num_models,
+                num_models=len(model_ids),
                 text_dim=text_dim,
                 num_classes=num_classes,
                 use_proj=use_proj,
             )
-            state = torch.load(checkpoint_path, map_location=device, weights_only=True)
             self.model.load_state_dict(state)
         else:
-            # HuggingFace Hub repo ID or local directory
-            self.model = MFModel.from_pretrained(
-                checkpoint_path,
-                dim=hidden_size,
-                num_models=num_models,
-                text_dim=text_dim,
-                num_classes=num_classes,
-                use_proj=use_proj,
+            raise ValueError(
+                f"Checkpoint not found: {checkpoint_path}\n"
+                "Train a local checkpoint with train_matrix_factorization.py first."
             )
         self.model = self.model.eval().to(device)
-        self.strong_model_id = MODEL_IDS[strong_model]
-        self.weak_model_id = MODEL_IDS[weak_model]
+        self.strong_model_id = model_ids[strong_model]
+        self.weak_model_id = model_ids[weak_model]
 
     def calculate_strong_win_rate(self, prompt):
         winrate = self.model.pred_win_rate(
