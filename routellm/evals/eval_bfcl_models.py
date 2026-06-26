@@ -86,7 +86,12 @@ def load_model(model_name: str, device: str, load_in_4bit: bool, flash_attn: boo
     # H100은 bfloat16이 float16보다 빠르고 수치적으로 안정적
     kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
     if flash_attn:
-        kwargs["attn_implementation"] = "flash_attention_2"
+        try:
+            import flash_attn  # noqa: F401
+            kwargs["attn_implementation"] = "flash_attention_2"
+        except ImportError:
+            print("  [warn] flash-attn not installed — falling back to default attention. "
+                  "Install with: pip install flash-attn --no-build-isolation")
     if load_in_4bit:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
