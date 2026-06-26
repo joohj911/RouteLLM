@@ -206,7 +206,6 @@ mf:
 | Router | Description |
 |--------|-------------|
 | `mf` | Matrix factorization on prompt embeddings (recommended) |
-| `sw_ranking` | Weighted Elo based on prompt similarity (requires OpenAI API) |
 | `bert` | BERT classifier trained on preference data |
 | `causal_llm` | LLM-based classifier |
 | `random` | Random baseline |

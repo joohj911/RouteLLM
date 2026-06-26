@@ -5,7 +5,6 @@ import random
 
 import numpy as np
 import torch
-from datasets import concatenate_datasets, load_dataset
 from huggingface_hub import hf_hub_download
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -16,12 +15,6 @@ from routellm.routers.causal_llm.llm_utils import (
 )
 from routellm.routers.causal_llm.model import CausalLLMClassifier
 from routellm.routers.matrix_factorization.model import MODEL_IDS, MFModel
-from routellm.routers.similarity_weighted.utils import (
-    get_openai_client,
-    compute_elo_mle_with_tie,
-    compute_tiers,
-    preprocess_battles,
-)
 
 
 def no_parallel(cls):
@@ -131,89 +124,11 @@ class BERTRouter(Router):
         return 1 - binary_prob
 
 
-class SWRankingRouter(Router):
-    def __init__(
-        self,
-        arena_battle_datasets,
-        arena_embedding_datasets,
-        # This is the model pair for Elo calculations at inference time,
-        # and can be different from the model pair used for routing.
-        strong_model="gpt-4-1106-preview",
-        weak_model="mixtral-8x7b-instruct-v0.1",
-        num_tiers=10,
-    ):
-        self.strong_model = strong_model
-        self.weak_model = weak_model
-
-        self.arena_df = concatenate_datasets(
-            [load_dataset(dataset, split="train") for dataset in arena_battle_datasets]
-        ).to_pandas()
-        self.arena_df = preprocess_battles(self.arena_df)
-
-        embeddings = [
-            np.array(load_dataset(dataset, split="train").to_dict()["embeddings"])
-            for dataset in arena_embedding_datasets
-        ]
-        self.arena_conv_embedding = np.concatenate(embeddings)
-        self.embedding_model = "text-embedding-3-small"
-
-        assert len(self.arena_df) == len(
-            self.arena_conv_embedding
-        ), "Number of battle embeddings is mismatched to data"
-
-        model_ratings = compute_elo_mle_with_tie(self.arena_df)
-        self.model2tier = compute_tiers(model_ratings, num_tiers=num_tiers)
-
-        self.arena_df["model_a"] = self.arena_df["model_a"].apply(
-            lambda x: self.model2tier[x]
-        )
-        self.arena_df["model_b"] = self.arena_df["model_b"].apply(
-            lambda x: self.model2tier[x]
-        )
-
-    def get_weightings(self, similarities):
-        max_sim = np.max(similarities)
-        return 10 * 10 ** (similarities / max_sim)
-
-    def calculate_strong_win_rate(
-        self,
-        prompt,
-    ):
-        prompt_emb = (
-            (
-                get_openai_client().embeddings.create(
-                    input=[prompt], model=self.embedding_model
-                )
-            )
-            .data[0]
-            .embedding
-        )
-        similarities = np.dot(self.arena_conv_embedding, prompt_emb) / (
-            np.linalg.norm(self.arena_conv_embedding, axis=1)
-            * np.linalg.norm(prompt_emb)
-        )
-
-        weightings = self.get_weightings(similarities)
-        res = compute_elo_mle_with_tie(self.arena_df, sample_weight=weightings)
-
-        weak_score, strong_score = (
-            res[self.model2tier[self.weak_model]],
-            res[self.model2tier[self.strong_model]],
-        )
-        weak_winrate = 1 / (1 + 10 ** ((strong_score - weak_score) / 400))
-        strong_winrate = 1 - weak_winrate
-
-        # If the expected strong winrate is greater than the threshold, use strong
-        return strong_winrate
-
-
 @no_parallel
 class MatrixFactorizationRouter(Router):
     def __init__(
         self,
         checkpoint_path,
-        # This is the model pair for scoring at inference time,
-        # and can be different from the model pair used for routing.
         strong_model="qwen3.5-9b",
         weak_model="qwen3.5-2b",
         hidden_size=128,
@@ -259,10 +174,7 @@ class MatrixFactorizationRouter(Router):
 # Parallelism makes the randomness non deterministic
 @no_parallel
 class RandomRouter(Router):
-    def calculate_strong_win_rate(
-        self,
-        prompt,
-    ):
+    def calculate_strong_win_rate(self, prompt):
         del prompt
         return random.uniform(0, 1)
 
@@ -272,6 +184,5 @@ ROUTER_CLS = {
     "mf": MatrixFactorizationRouter,
     "causal_llm": CausalLLMRouter,
     "bert": BERTRouter,
-    "sw_ranking": SWRankingRouter,
 }
 NAME_TO_CLS = {v: k for k, v in ROUTER_CLS.items()}

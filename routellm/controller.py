@@ -12,16 +12,6 @@ from routellm.routers.routers import ROUTER_CLS
 # Default config for routers augmented using golden label data from GPT-4.
 # This is exactly the same as config.example.yaml.
 GPT_4_AUGMENTED_CONFIG = {
-    "sw_ranking": {
-        "arena_battle_datasets": [
-            "lmsys/lmsys-arena-human-preference-55k",
-            "routellm/gpt4_judge_battles",
-        ],
-        "arena_embedding_datasets": [
-            "routellm/arena_battles_embeddings",
-            "routellm/gpt4_judge_battles_embeddings",
-        ],
-    },
     "causal_llm": {"checkpoint_path": "routellm/causal_llm_gpt4_augmented"},
     "bert": {"checkpoint_path": "routellm/bert_gpt4_augmented"},
     "mf": {"checkpoint_path": "routellm/mf_gpt4_augmented"},
