@@ -14,8 +14,8 @@ BFCL v4 데이터로 MF 라우터 학습/평가 데이터를 준비하는 스크
     --results-path ./eval_results.json \\
     --prompts-path ./bfcl_data/prompts.json \\
     --output-dir ./bfcl_data \\
-    --strong-model qwen3.5-9b \\
-    --weak-model qwen3.5-2b \\
+    --strong-model Qwen/Qwen3.5-9B \\
+    --weak-model Qwen/Qwen3.5-2B \\
     --train-ratio 0.8
 
 출력 파일:
@@ -26,8 +26,8 @@ eval_results.json 형식 (모델 실행 후 직접 생성):
   [
     {
       "id": "BFCL_v4_live_simple_0",
-      "qwen3.5-2b_pass": true,
-      "qwen3.5-9b_pass": false
+      "Qwen/Qwen3.5-2B_pass": true,
+      "Qwen/Qwen3.5-9B_pass": false
     },
     ...
   ]
@@ -51,10 +51,11 @@ GORILLA_RAW_BASE = (
 
 # 존재하지 않는 split은 load_bfcl_prompts()에서 자동으로 skip됨.
 #
-# 제외한 카테고리 (외부 인프라 필요):
-#   BFCL_v4_memory     : key-value / vector / rec_sum 메모리 백엔드 필요
-#   BFCL_v4_web_search : 실시간 웹 검색 API 필요
+# 제외한 카테고리:
+#   BFCL_v4_memory          : key-value / vector / rec_sum 메모리 백엔드 필요
+#   BFCL_v4_web_search      : 실시간 웹 검색 API 필요
 #   BFCL_v4_format_sensitivity : 비채점(non-scoring) 카테고리
+#   BFCL_v4_multi_turn_*    : 가상 환경 시뮬레이터(GorillaFileSystem 등) 없이는 정확한 평가 불가
 BFCL_SPLITS = [
     # Non-live: 전문가 큐레이션, single-turn
     ("non_live", "BFCL_v4_simple_python"),
@@ -71,11 +72,6 @@ BFCL_SPLITS = [
     ("live", "BFCL_v4_live_parallel_multiple"),
     ("live", "BFCL_v4_live_relevance"),
     ("live", "BFCL_v4_live_irrelevance"),
-    # Multi-turn
-    ("multi_turn", "BFCL_v4_multi_turn_base"),
-    ("multi_turn", "BFCL_v4_multi_turn_miss_func"),
-    ("multi_turn", "BFCL_v4_multi_turn_miss_param"),
-    ("multi_turn", "BFCL_v4_multi_turn_long_context"),
 ]
 
 
@@ -84,9 +80,6 @@ def extract_prompt(sample, split_name: str) -> str:
     question = sample.get("question", [])
     if not question:
         return ""
-
-    # multi_turn: question = [[turn1_msgs], [turn2_msgs], ...]
-    # single_turn: question = [[msgs]]
     first_turn = question[0] if isinstance(question[0], list) else question
     for msg in first_turn:
         if isinstance(msg, dict) and msg.get("role") == "user":
@@ -201,13 +194,13 @@ def convert_results_to_split_data(
       - 나머지는 평가 전용 → BFCLBenchmark에서 사용
 
     train_data.json 형식 (train_matrix_factorization.py 호환):
-      [{"model_a": "qwen3.5-2b", "model_b": "qwen3.5-9b",
+      [{"model_a": "Qwen/Qwen3.5-2B", "model_b": "Qwen/Qwen3.5-9B",
         "winner": "model_b", "idx": 0}, ...]
 
     test_data.json 형식 (BFCLBenchmark 호환):
       [{"idx": 0, "id": "...", "prompt": "...",
         "bfcl_split": "live_simple",
-        "qwen3.5-2b": false, "qwen3.5-9b": true}, ...]
+        "Qwen/Qwen3.5-2B": false, "Qwen/Qwen3.5-9B": true}, ...]
     """
     with open(results_path) as f:
         results = json.load(f)
@@ -321,8 +314,8 @@ if __name__ == "__main__":
     convert_parser.add_argument("--results-path", type=str, required=True)
     convert_parser.add_argument("--prompts-path", type=str, required=True)
     convert_parser.add_argument("--output-dir", type=str, default="./bfcl_data")
-    convert_parser.add_argument("--strong-model", type=str, default="qwen3.5-9b")
-    convert_parser.add_argument("--weak-model", type=str, default="qwen3.5-2b")
+    convert_parser.add_argument("--strong-model", type=str, default="Qwen/Qwen3.5-9B")
+    convert_parser.add_argument("--weak-model", type=str, default="Qwen/Qwen3.5-2B")
     convert_parser.add_argument(
         "--train-ratio",
         type=float,

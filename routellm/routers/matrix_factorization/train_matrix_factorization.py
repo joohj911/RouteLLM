@@ -10,20 +10,24 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from routellm.routers.matrix_factorization.model import MODEL_IDS
-
 torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 
 
+def build_model_ids(data: list[dict]) -> dict[str, int]:
+    """train_data.json에 등장하는 모델 이름으로 model_ids를 자동 생성."""
+    names = sorted({s["model_a"] for s in data} | {s["model_b"] for s in data})
+    return {name: i for i, name in enumerate(names)}
+
+
 class PairwiseDataset(Dataset):
-    def __init__(self, data):
+    def __init__(self, data, model_ids: dict[str, int]):
         self.models_a = torch.tensor(
-            [MODEL_IDS[sample["model_a"]] for sample in data], dtype=torch.int64
+            [model_ids[sample["model_a"]] for sample in data], dtype=torch.int64
         )
         self.models_b = torch.tensor(
-            [MODEL_IDS[sample["model_b"]] for sample in data], dtype=torch.int64
+            [model_ids[sample["model_b"]] for sample in data], dtype=torch.int64
         )
         self.prompt_id = [sample["idx"] for sample in data]
         self.winners = [sample["winner"] for sample in data]
@@ -235,18 +239,22 @@ if __name__ == "__main__":
     ]
     print(f"Loaded {len(filtered_data)} samples (filtered from {len(data)})")
 
+    # train_data.json에 등장하는 모델 이름으로 model_ids 자동 생성
+    model_ids = build_model_ids(filtered_data)
+    print(f"Model IDs: {model_ids}")
+
     random.shuffle(filtered_data)
     n_val = max(1, int(len(filtered_data) * args.val_ratio))
     train_data = filtered_data[:-n_val]
     val_data = filtered_data[-n_val:]
     print(f"Train: {len(train_data)}  Val: {len(val_data)}")
 
-    train_loader = PairwiseDataset(train_data).get_dataloaders(args.batch_size, shuffle=True)
-    val_loader = PairwiseDataset(val_data).get_dataloaders(1024, shuffle=False)
+    train_loader = PairwiseDataset(train_data, model_ids).get_dataloaders(args.batch_size, shuffle=True)
+    val_loader = PairwiseDataset(val_data, model_ids).get_dataloaders(1024, shuffle=False)
 
     model = MFModel_Train(
         dim=args.dim,
-        num_models=len(MODEL_IDS),
+        num_models=len(model_ids),
         text_dim=args.text_dim,
         use_proj=not args.no_proj,
         npy_path=args.npy_path,
@@ -265,8 +273,10 @@ if __name__ == "__main__":
     )
 
     # best val acc 시점의 가중치 저장 (last epoch이 아님)
+    # model_ids를 함께 저장하여 inference 시 외부 딕셔너리 없이 로드 가능
     save_state = best_state if best_state is not None else {
         k: v for k, v in model.state_dict().items() if not k.startswith("Q.")
     }
-    torch.save(save_state, args.output_path)
+    torch.save({"state_dict": save_state, "model_ids": model_ids}, args.output_path)
     print(f"\nSaved model → {args.output_path}  (best_val_acc={best_acc:.4f})")
+    print(f"  model_ids : {model_ids}")

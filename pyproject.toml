@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "routellm"
 version = "0.2.0"
-description = "A framework for serving and evaluating large language model routers."
+description = "A framework for training and evaluating LLM routers for tool-calling."
 readme = "README.md"
 classifiers = ["Programming Language :: Python :: 3"]
 dependencies = [
@@ -15,31 +15,21 @@ dependencies = [
 	"numpy>=1.24,<2",
 	'pandas>=1.5',
 	'torch>=2.0.0',
-	'scikit-learn>=1.3',
 	'tqdm>=4.65',
-	'openai>=1.0',
 	'transformers>=4.44.0',
 	'accelerate>=0.26.0',
-	'datasets>=2.20.0',
-	'litellm>=1.0',
 	'sentence-transformers>=3.0.0',
 	'huggingface_hub>=0.24.0',
-	'psutil',
 ]
 
 [project.optional-dependencies]
-serve = ["fastapi", "shortuuid", "uvicorn"]
-# sglang is only used in legacy generate_responses.py scripts (MMLU/GSM8K precomputation).
-# It is NOT part of the BFCL pipeline. Install separately if needed:
-#   pip install "sglang[all]" --find-links https://flashinfer.ai/whl/cu124/torch2.5/
-eval = ["matplotlib", "pandarallel"]
+eval = ["matplotlib", "pandarallel", "psutil"]
 # bitsandbytes is required only when using --load-in-4bit in eval_bfcl_models.py
 quant = ["bitsandbytes>=0.43.0"]
 dev = ["black", "isort", "pre-commit"]
 
 [project.urls]
-"Homepage" = "https://github.com/lm-sys/RouteLLM"
-"Bug Tracker" = "https://github.com/lm-sys/RouteLLM/issues"
+"Homepage" = "https://github.com/joohj911/RouteLLM"
 
 [tool.isort]
 profile = "black"

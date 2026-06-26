@@ -20,7 +20,7 @@ The router learns which queries require the 9B model and routes the rest to the 
 git clone https://github.com/joohj911/RouteLLM.git
 cd RouteLLM
 pip install -e ".[eval]"
-# Optional: 4-bit quantization for low-VRAM eval
+# Optional: 4-bit quantization for low-VRAM inference
 pip install -e ".[eval,quant]"
 ```
 
@@ -41,28 +41,23 @@ Output:
 
 ### Step 2: Evaluate Models on BFCL
 
-Run both models on the BFCL prompts to get pass/fail results. Each model runs on its own GPU:
+Pass any number of models to evaluate. Available GPUs are detected automatically and models are distributed across them — up to N models run concurrently on N GPUs, then the next batch, and so on:
 
 ```bash
 python routellm/evals/eval_bfcl_models.py \
   --prompts-path ./bfcl_data/prompts.json \
   --output-path ./eval_results.json \
-  --weak-model Qwen/Qwen3.5-2B \
-  --strong-model Qwen/Qwen3.5-9B \
-  --weak-device cuda:0 \
-  --strong-device cuda:1 \
-  --batch-size 16 \
-  --concurrent
+  --models Qwen/Qwen3.5-0.6B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B \
+  --batch-size 16
 ```
 
 Options:
-- `--weak-device` / `--strong-device` — which GPU to use for each model (default: `cuda:0` / `cuda:1`)
-- `--batch-size` — number of samples per `model.generate()` call (default: 8; increase to 16-32 if VRAM allows)
-- `--concurrent` — evaluate both models simultaneously on their respective GPUs using threads (~2x throughput)
+- `--models` — one or more HuggingFace model IDs to evaluate
+- `--batch-size` — inference batch size per `model.generate()` call (default: 0 = auto-detect from GPU memory at 80% utilization)
 - `--load-in-4bit` — 4-bit quantization for low-VRAM setups (requires `bitsandbytes`)
 - `--max-new-tokens` — max generation length (default: 512)
 
-> **Note:** SDPA (Scaled Dot Product Attention) is enabled automatically on CUDA via PyTorch 2.0+ built-in fused kernels — no extra package required.
+GPU scheduling: with 2 GPUs and 3 models, model 1 runs on `cuda:0` and model 2 on `cuda:1` simultaneously, then model 3 runs on `cuda:0`. No flags needed — GPU count is detected via `torch.cuda.device_count()`.
 
 Output: `eval_results.json` — per-sample pass/fail for each model.
 
@@ -73,12 +68,13 @@ The script prints a summary at the end:
 BFCL Evaluation Summary
 ============================================================
   Total samples :  1234
-  Weak   model  (        qwen3.5-2b) :  768/1234  (62.2%)
-  Strong model  (        qwen3.5-9b) : 1003/1234  (81.3%)
+      Qwen/Qwen3.5-0.6B :  612/1234  (49.6%)
+        Qwen/Qwen3.5-2B :  768/1234  (62.2%)
+        Qwen/Qwen3.5-9B : 1003/1234  (81.3%)
 ============================================================
 ```
 
-> **Note:** The script prints the short model names used for the next step, e.g. `--weak-model qwen3.5-2b --strong-model qwen3.5-9b`.
+> **Note:** The script prints the full HuggingFace model IDs used in the next step, e.g. `--weak-model Qwen/Qwen3.5-2B --strong-model Qwen/Qwen3.5-9B`.
 
 ### Step 3: Convert to Train/Test Split
 
@@ -89,8 +85,8 @@ python routellm/routers/matrix_factorization/prepare_bfcl_data.py convert \
   --results-path ./eval_results.json \
   --prompts-path ./bfcl_data/prompts.json \
   --output-dir ./bfcl_data \
-  --weak-model qwen3.5-2b \
-  --strong-model qwen3.5-9b \
+  --weak-model Qwen/Qwen3.5-2B \
+  --strong-model Qwen/Qwen3.5-9B \
   --train-ratio 0.8
 ```
 
@@ -130,8 +126,8 @@ python -m routellm.evals.evaluate \
   --routers mf \
   --mf-checkpoint ./bfcl_mf_model.pt \
   --test-data ./bfcl_data/test_data.json \
-  --strong-model qwen3.5-9b \
-  --weak-model qwen3.5-2b
+  --strong-model Qwen/Qwen3.5-9B \
+  --weak-model Qwen/Qwen3.5-2B
 ```
 
 Example output:
@@ -140,8 +136,8 @@ Example output:
 ================================================================
 BFCL Routing Summary
 ================================================================
-  Weak model   (           qwen3.5-2b):   62.4%
-  Strong model (           qwen3.5-9b):   81.3%
+  Weak model   (      Qwen/Qwen3.5-2B):   62.4%
+  Strong model (      Qwen/Qwen3.5-9B):   81.3%
 
   Router             Threshold  Pass Rate    Weak%   Strong%
   ---------------------------------------------------------
@@ -153,7 +149,7 @@ BFCL Routing Summary
 
 ## Local Inference (Two-GPU Setup)
 
-For production use, load both models locally with `LocalController`. Each model is pinned to its own GPU — no per-request model loading:
+After training, load both models locally with `LocalController`. Each model is pinned to its own GPU — no per-request model loading:
 
 ```python
 from routellm.local_pipeline import LocalController
@@ -176,48 +172,15 @@ response = controller.completion(
 print(response["choices"][0]["message"])
 ```
 
-## Using the Router via API
-
-Use the router against any OpenAI-compatible API endpoint:
-
-```python
-from routellm.controller import Controller
-
-controller = Controller(
-    routers=["mf"],
-    config={"mf": {"checkpoint_path": "./bfcl_mf_model.pt", "text_dim": 384}},
-    strong_model="qwen3.5-9b",
-    weak_model="qwen3.5-2b",
-)
-
-response = controller.chat.completions.create(
-    model="router-mf-0.3",   # threshold controls strong model call rate
-    messages=[{"role": "user", "content": "What's the weather in Seoul?"}],
-)
-```
-
-The `model` field format is `router-[ROUTER_NAME]-[THRESHOLD]`.
-
-## OpenAI-Compatible Server
-
-```bash
-python -m routellm.openai_server \
-  --routers mf \
-  --strong-model qwen3.5-9b \
-  --weak-model qwen3.5-2b \
-  --config config.example.yaml
-```
-
 ## Configuration
 
-For `evaluate.py` and the OpenAI server, router configuration is passed via `--config` YAML or (for the `mf` router) via `--mf-checkpoint` shortcut:
+Router configuration is passed via `--config` YAML or (for `mf`) via `--mf-checkpoint` shortcut:
 
 ```yaml
 # config.example.yaml
 mf:
   checkpoint_path: ./bfcl_mf_model.pt
   text_dim: 384
-  num_models: 66
 ```
 
 ## Routers
@@ -225,8 +188,6 @@ mf:
 | Router | Description |
 |--------|-------------|
 | `mf` | Matrix factorization on prompt embeddings (recommended) |
-| `bert` | BERT classifier trained on preference data |
-| `causal_llm` | LLM-based classifier |
 | `random` | Random baseline |
 
 ## Extending RouteLLM
@@ -234,10 +195,6 @@ mf:
 ### Adding a new router
 
 Implement the abstract `Router` class in `routellm/routers/routers.py` and add it to `ROUTER_CLS`. The only required method is `calculate_strong_win_rate(prompt) -> float`. If the returned value exceeds the user-specified threshold, the request goes to the strong model.
-
-### Adding a new benchmark
-
-Implement the abstract `Benchmark` class in `routellm/evals/benchmarks.py` and update `routellm/evals/evaluate.py` to initialize it.
 
 ## Citation
 
