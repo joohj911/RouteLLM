@@ -50,11 +50,17 @@ python routellm/evals/eval_bfcl_models.py \
   --weak-model Qwen/Qwen3.5-2B \
   --strong-model Qwen/Qwen3.5-9B \
   --weak-device cuda:0 \
-  --strong-device cuda:1
+  --strong-device cuda:1 \
+  --batch-size 16 \
+  --flash-attn \
+  --concurrent
 ```
 
 Options:
 - `--weak-device` / `--strong-device` — which GPU to use for each model (default: `cuda:0` / `cuda:1`)
+- `--batch-size` — number of samples per `model.generate()` call (default: 8; increase to 16-32 if VRAM allows)
+- `--flash-attn` — enable Flash Attention 2 for ~20-40% faster prefill on H100/A100
+- `--concurrent` — evaluate both models simultaneously on their respective GPUs using threads (~2x throughput)
 - `--load-in-4bit` — 4-bit quantization for low-VRAM setups (requires `bitsandbytes`)
 - `--max-new-tokens` — max generation length (default: 512)
 
