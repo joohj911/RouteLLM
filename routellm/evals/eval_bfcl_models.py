@@ -430,7 +430,10 @@ def auto_batch_size(
     if per_sample <= 0:
         batch = 1
     else:
-        batch = max(1, min(1 + int(available / per_sample), 512))
+        # Cap at 64: calibration samples (first 2 BFCL items) are often shorter
+        # than typical samples that include full tool schemas, so per_sample is
+        # underestimated. 64 is a safe upper bound for long tool-call prompts.
+        batch = max(1, min(1 + int(available / per_sample), 64))
 
     gb, mb = 1024 ** 3, 1024 ** 2
     gpu_label = f"{len(gpu_indices)}×GPU" if len(gpu_indices) > 1 else f"GPU:{gpu_indices[0]}"
@@ -515,11 +518,18 @@ def evaluate_model(
         try:
             responses = run_batch_inference(model, tokenizer, batch_inputs, max_new_tokens)
         except Exception as e:
-            print(f"\n  [error] batch@{batch_start}: {e}")
-            for sid in batch_ids:
-                results[sid] = False
-                failed_samples += 1
-            continue
+            # Batch too large (OOM or 32-bit index overflow) — retry one sample at a time
+            print(f"\n  [warn] batch@{batch_start} failed ({type(e).__name__}), retrying sample-by-sample ...")
+            torch.cuda.empty_cache()
+            responses = []
+            for single_input in batch_inputs:
+                try:
+                    r = run_batch_inference(model, tokenizer, [single_input], max_new_tokens)
+                    responses.extend(r)
+                except Exception as e2:
+                    print(f"\n  [error] single sample failed: {e2}")
+                    responses.append("")
+                    failed_samples += 1
 
         for sid, response, sample in zip(batch_ids, responses, batch_samples):
             split_name = sample.get("_split", "")
@@ -531,11 +541,11 @@ def evaluate_model(
     unload_model(model)
 
     n_pass = sum(results.values())
-    print(f"\n{short_name}: {n_pass}/{len(results)} pass ({n_pass/max(len(results),1)*100:.1f}%)")
+    print(f"\n{model_name}: {n_pass}/{len(results)} pass ({n_pass/max(len(results),1)*100:.1f}%)")
     if failed_samples:
         print(f"  Errors/missing: {failed_samples}")
 
-    return results, short_name
+    return results, model_name
 
 
 # ─────────────────────────────────────────────
