@@ -167,9 +167,7 @@ def _build_response(raw: str, model_name: str) -> dict:
 
 class LocalController(Controller):
     """
-    Drop-in replacement for Controller that runs both models locally via
-    transformers instead of calling an external API via litellm.
-
+    Runs both models locally via transformers (each on its own GPU).
     Both models are loaded at __init__ time so there is no per-request
     model-loading overhead.
     """

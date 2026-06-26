@@ -20,7 +20,7 @@ The router learns which queries require the 9B model and routes the rest to the 
 git clone https://github.com/joohj911/RouteLLM.git
 cd RouteLLM
 pip install -e ".[eval]"
-# Optional: 4-bit quantization for low-VRAM eval
+# Optional: 4-bit quantization for low-VRAM inference
 pip install -e ".[eval,quant]"
 ```
 
@@ -149,7 +149,7 @@ BFCL Routing Summary
 
 ## Local Inference (Two-GPU Setup)
 
-For production use, load both models locally with `LocalController`. Each model is pinned to its own GPU — no per-request model loading:
+After training, load both models locally with `LocalController`. Each model is pinned to its own GPU — no per-request model loading:
 
 ```python
 from routellm.local_pipeline import LocalController
@@ -172,41 +172,9 @@ response = controller.completion(
 print(response["choices"][0]["message"])
 ```
 
-## Using the Router via API
-
-Use the router against any OpenAI-compatible API endpoint:
-
-```python
-from routellm.controller import Controller
-
-controller = Controller(
-    routers=["mf"],
-    config={"mf": {"checkpoint_path": "./bfcl_mf_model.pt", "text_dim": 384}},
-    strong_model="Qwen/Qwen3.5-9B",
-    weak_model="Qwen/Qwen3.5-2B",
-)
-
-response = controller.chat.completions.create(
-    model="router-mf-0.3",   # threshold controls strong model call rate
-    messages=[{"role": "user", "content": "What's the weather in Seoul?"}],
-)
-```
-
-The `model` field format is `router-[ROUTER_NAME]-[THRESHOLD]`.
-
-## OpenAI-Compatible Server
-
-```bash
-python -m routellm.openai_server \
-  --routers mf \
-  --strong-model Qwen/Qwen3.5-9B \
-  --weak-model Qwen/Qwen3.5-2B \
-  --config config.example.yaml
-```
-
 ## Configuration
 
-For `evaluate.py` and the OpenAI server, router configuration is passed via `--config` YAML or (for the `mf` router) via `--mf-checkpoint` shortcut:
+Router configuration is passed via `--config` YAML or (for `mf`) via `--mf-checkpoint` shortcut:
 
 ```yaml
 # config.example.yaml
@@ -220,8 +188,6 @@ mf:
 | Router | Description |
 |--------|-------------|
 | `mf` | Matrix factorization on prompt embeddings (recommended) |
-| `bert` | BERT classifier trained on preference data |
-| `causal_llm` | LLM-based classifier |
 | `random` | Random baseline |
 
 ## Extending RouteLLM
@@ -229,10 +195,6 @@ mf:
 ### Adding a new router
 
 Implement the abstract `Router` class in `routellm/routers/routers.py` and add it to `ROUTER_CLS`. The only required method is `calculate_strong_win_rate(prompt) -> float`. If the returned value exceeds the user-specified threshold, the request goes to the strong model.
-
-### Adding a new benchmark
-
-Implement the abstract `Benchmark` class in `routellm/evals/benchmarks.py` and update `routellm/evals/evaluate.py` to initialize it.
 
 ## Citation
 
