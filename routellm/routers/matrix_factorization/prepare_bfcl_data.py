@@ -51,10 +51,11 @@ GORILLA_RAW_BASE = (
 
 # 존재하지 않는 split은 load_bfcl_prompts()에서 자동으로 skip됨.
 #
-# 제외한 카테고리 (외부 인프라 필요):
-#   BFCL_v4_memory     : key-value / vector / rec_sum 메모리 백엔드 필요
-#   BFCL_v4_web_search : 실시간 웹 검색 API 필요
+# 제외한 카테고리:
+#   BFCL_v4_memory          : key-value / vector / rec_sum 메모리 백엔드 필요
+#   BFCL_v4_web_search      : 실시간 웹 검색 API 필요
 #   BFCL_v4_format_sensitivity : 비채점(non-scoring) 카테고리
+#   BFCL_v4_multi_turn_*    : 가상 환경 시뮬레이터(GorillaFileSystem 등) 없이는 정확한 평가 불가
 BFCL_SPLITS = [
     # Non-live: 전문가 큐레이션, single-turn
     ("non_live", "BFCL_v4_simple_python"),
@@ -71,11 +72,6 @@ BFCL_SPLITS = [
     ("live", "BFCL_v4_live_parallel_multiple"),
     ("live", "BFCL_v4_live_relevance"),
     ("live", "BFCL_v4_live_irrelevance"),
-    # Multi-turn
-    ("multi_turn", "BFCL_v4_multi_turn_base"),
-    ("multi_turn", "BFCL_v4_multi_turn_miss_func"),
-    ("multi_turn", "BFCL_v4_multi_turn_miss_param"),
-    ("multi_turn", "BFCL_v4_multi_turn_long_context"),
 ]
 
 
@@ -84,9 +80,6 @@ def extract_prompt(sample, split_name: str) -> str:
     question = sample.get("question", [])
     if not question:
         return ""
-
-    # multi_turn: question = [[turn1_msgs], [turn2_msgs], ...]
-    # single_turn: question = [[msgs]]
     first_turn = question[0] if isinstance(question[0], list) else question
     for msg in first_turn:
         if isinstance(msg, dict) and msg.get("role") == "user":

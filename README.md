@@ -41,28 +41,23 @@ Output:
 
 ### Step 2: Evaluate Models on BFCL
 
-Run both models on the BFCL prompts to get pass/fail results. Each model runs on its own GPU:
+Pass any number of models to evaluate. Available GPUs are detected automatically and models are distributed across them — up to N models run concurrently on N GPUs, then the next batch, and so on:
 
 ```bash
 python routellm/evals/eval_bfcl_models.py \
   --prompts-path ./bfcl_data/prompts.json \
   --output-path ./eval_results.json \
-  --weak-model Qwen/Qwen3.5-2B \
-  --strong-model Qwen/Qwen3.5-9B \
-  --weak-device cuda:0 \
-  --strong-device cuda:1 \
-  --batch-size 16 \
-  --concurrent
+  --models Qwen/Qwen3.5-0.6B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B \
+  --batch-size 16
 ```
 
 Options:
-- `--weak-device` / `--strong-device` — which GPU to use for each model (default: `cuda:0` / `cuda:1`)
+- `--models` — one or more HuggingFace model IDs to evaluate
 - `--batch-size` — number of samples per `model.generate()` call (default: 8; increase to 16-32 if VRAM allows)
-- `--concurrent` — evaluate both models simultaneously on their respective GPUs using threads (~2x throughput)
 - `--load-in-4bit` — 4-bit quantization for low-VRAM setups (requires `bitsandbytes`)
 - `--max-new-tokens` — max generation length (default: 512)
 
-> **Note:** SDPA (Scaled Dot Product Attention) is enabled automatically on CUDA via PyTorch 2.0+ built-in fused kernels — no extra package required.
+GPU scheduling: with 2 GPUs and 3 models, model 1 runs on `cuda:0` and model 2 on `cuda:1` simultaneously, then model 3 runs on `cuda:0`. No flags needed — GPU count is detected via `torch.cuda.device_count()`.
 
 Output: `eval_results.json` — per-sample pass/fail for each model.
 
@@ -73,12 +68,13 @@ The script prints a summary at the end:
 BFCL Evaluation Summary
 ============================================================
   Total samples :  1234
-  Weak   model  (        qwen3.5-2b) :  768/1234  (62.2%)
-  Strong model  (        qwen3.5-9b) : 1003/1234  (81.3%)
+              qwen3.5-0.6b :  612/1234  (49.6%)
+                qwen3.5-2b :  768/1234  (62.2%)
+                qwen3.5-9b : 1003/1234  (81.3%)
 ============================================================
 ```
 
-> **Note:** The script prints the short model names used for the next step, e.g. `--weak-model qwen3.5-2b --strong-model qwen3.5-9b`.
+> **Note:** The script prints the short model names (HF ID after the `/`) used for the next step, e.g. `--weak-model qwen3.5-2b --strong-model qwen3.5-9b`.
 
 ### Step 3: Convert to Train/Test Split
 
