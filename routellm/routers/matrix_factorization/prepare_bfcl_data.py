@@ -218,7 +218,7 @@ def convert_results_to_split_data(
     weak_key = f"{weak_model}_pass"
     strong_key = f"{strong_model}_pass"
 
-    # 각 샘플을 레이블링하고 필터링
+    # 각 샘플을 레이블링
     labeled = []
     skipped = 0
     for r in results:
@@ -226,13 +226,13 @@ def convert_results_to_split_data(
         strong_pass = r.get(strong_key, False)
 
         if weak_pass and strong_pass:
-            winner = "model_a"  # weak으로 충분
+            winner = "model_a"  # 둘 다 성공 → weak으로 충분
         elif not weak_pass and strong_pass:
-            winner = "model_b"  # strong 필요
+            winner = "model_b"  # weak 실패, strong 성공 → strong 필요
+        elif weak_pass and not strong_pass:
+            winner = "model_a"  # weak만 성공 → weak로 보냄
         else:
-            # 둘 다 실패 or weak만 성공 → 라우팅 신호 약해 제거
-            skipped += 1
-            continue
+            winner = "model_b"  # 둘 다 실패 → strong(frontier)으로 보냄
 
         prompt_meta = id_to_prompt.get(r.get("id", ""))
         if prompt_meta is None:
@@ -289,7 +289,15 @@ def convert_results_to_split_data(
     train_cats = Counter(item["bfcl_category"] for item in train_items)
     test_cats = Counter(item["bfcl_category"] for item in test_items)
 
-    print(f"\nTotal labeled  : {len(labeled)}  (skipped: {skipped})")
+    # winner 분포 출력
+    from collections import Counter as _Counter
+    winner_dist = _Counter(item["_winner"] for item in labeled)
+    weak_cnt = winner_dist.get("model_a", 0)
+    strong_cnt = winner_dist.get("model_b", 0)
+
+    print(f"\nTotal labeled  : {len(labeled)}  (skipped/missing: {skipped})")
+    print(f"  → weak  (model_a): {weak_cnt} ({weak_cnt/max(len(labeled),1)*100:.1f}%)")
+    print(f"  → strong(model_b): {strong_cnt} ({strong_cnt/max(len(labeled),1)*100:.1f}%)")
     print(f"Train split    : {len(train_data)} ({train_ratio*100:.0f}%)")
     print(f"  by category  : {dict(train_cats)}")
     print(f"Test split     : {len(test_data)} ({(1-train_ratio)*100:.0f}%)")

@@ -44,21 +44,39 @@ Output:
 Run both models on the BFCL prompts to get pass/fail results. Each model runs on its own GPU:
 
 ```bash
-python routellm/routers/matrix_factorization/eval_bfcl_models.py \
+python routellm/evals/eval_bfcl_models.py \
   --prompts-path ./bfcl_data/prompts.json \
   --output-path ./eval_results.json \
   --weak-model Qwen/Qwen3.5-2B \
   --strong-model Qwen/Qwen3.5-9B \
   --weak-device cuda:0 \
-  --strong-device cuda:1
+  --strong-device cuda:1 \
+  --batch-size 16 \
+  --flash-attn \
+  --concurrent
 ```
 
 Options:
 - `--weak-device` / `--strong-device` — which GPU to use for each model (default: `cuda:0` / `cuda:1`)
+- `--batch-size` — number of samples per `model.generate()` call (default: 8; increase to 16-32 if VRAM allows)
+- `--flash-attn` — enable Flash Attention 2 for ~20-40% faster prefill on H100/A100
+- `--concurrent` — evaluate both models simultaneously on their respective GPUs using threads (~2x throughput)
 - `--load-in-4bit` — 4-bit quantization for low-VRAM setups (requires `bitsandbytes`)
 - `--max-new-tokens` — max generation length (default: 512)
 
 Output: `eval_results.json` — per-sample pass/fail for each model.
+
+The script prints a summary at the end:
+
+```
+============================================================
+BFCL Evaluation Summary
+============================================================
+  Total samples :  1234
+  Weak   model  (        qwen3.5-2b) :  768/1234  (62.2%)
+  Strong model  (        qwen3.5-9b) : 1003/1234  (81.3%)
+============================================================
+```
 
 > **Note:** The script prints the short model names used for the next step, e.g. `--weak-model qwen3.5-2b --strong-model qwen3.5-9b`.
 
@@ -81,11 +99,12 @@ Output:
 - `bfcl_data/test_data.json` — held-out test set for evaluation
 
 **Labeling rule:**
-| Weak passes | Strong passes | Label |
-|---|---|---|
-| ✓ | ✓ | Route to weak (weak is sufficient) |
-| ✗ | ✓ | Route to strong (strong is needed) |
-| ✓ or ✗ | ✗ | Discarded (no routing signal) |
+| Weak passes | Strong passes | Label | Reason |
+|---|---|---|---|
+| ✓ | ✓ | Route to weak | Weak is sufficient |
+| ✗ | ✓ | Route to strong | Strong is needed |
+| ✓ | ✗ | Route to weak | Weak succeeded; strong failed |
+| ✗ | ✗ | Route to strong | Neither local model succeeded → send to frontier |
 
 ### Step 4: Train the MF Router
 
@@ -206,7 +225,6 @@ mf:
 | Router | Description |
 |--------|-------------|
 | `mf` | Matrix factorization on prompt embeddings (recommended) |
-| `sw_ranking` | Weighted Elo based on prompt similarity (requires OpenAI API) |
 | `bert` | BERT classifier trained on preference data |
 | `causal_llm` | LLM-based classifier |
 | `random` | Random baseline |

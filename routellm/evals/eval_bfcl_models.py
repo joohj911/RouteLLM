@@ -22,6 +22,7 @@ BFCL 카테고리별 평가 기준:
 """
 
 import argparse
+import concurrent.futures
 import json
 import re
 import urllib.request
@@ -68,18 +69,24 @@ BFCL_SPLITS = [
 # 모델 로드 / 언로드
 # ─────────────────────────────────────────────
 
-def load_model(model_name: str, device: str, load_in_4bit: bool):
+def load_model(model_name: str, device: str, load_in_4bit: bool, flash_attn: bool = False):
     """
     device 형식:
       "cuda:0", "cuda:1"  → 해당 GPU에만 올림 (device_map={"": device})
       "cuda"              → 가용 GPU 전체에 자동 분산 (device_map="auto")
       "cpu"               → CPU
     """
-    print(f"\nLoading {model_name} on {device} (4-bit={load_in_4bit}) ...")
+    print(f"\nLoading {model_name} on {device} (4-bit={load_in_4bit}, flash_attn={flash_attn}) ...")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    # 배치 생성 시 left padding 필요 (generation은 항상 시퀀스 끝에서 시작)
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # H100은 bfloat16이 float16보다 빠르고 수치적으로 안정적
     kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
+    if flash_attn:
+        kwargs["attn_implementation"] = "flash_attention_2"
     if load_in_4bit:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -178,29 +185,38 @@ def build_messages(question: list, is_multi_turn: bool) -> list:
 # 추론
 # ─────────────────────────────────────────────
 
-def run_inference(
-    model,
-    tokenizer,
-    messages: list,
-    tools: list,
-    max_new_tokens: int,
-    device: str,
-) -> str:
-    """Qwen3.5 chat template을 적용하여 응답을 생성한다."""
-    apply_kwargs = {
-        "tokenize": False,
-        "add_generation_prompt": True,
-    }
+def _apply_template(tokenizer, messages: list, tools: list) -> str:
+    """단일 샘플에 chat template 적용 (텍스트 반환)."""
+    apply_kwargs = {"tokenize": False, "add_generation_prompt": True}
     if tools:
         apply_kwargs["tools"] = tools
-    # Qwen3 계열: thinking 비활성화로 clean output
     try:
         apply_kwargs["enable_thinking"] = False
     except Exception:
         pass
+    return tokenizer.apply_chat_template(messages, **apply_kwargs)
 
-    text = tokenizer.apply_chat_template(messages, **apply_kwargs)
-    inputs = tokenizer(text, return_tensors="pt")
+
+def run_batch_inference(
+    model,
+    tokenizer,
+    batch_inputs: list[tuple[list, list]],
+    max_new_tokens: int,
+) -> list[str]:
+    """
+    (messages, tools) 쌍의 배치를 한 번의 model.generate()로 추론한다.
+
+    left padding 사용: 서로 길이가 다른 시퀀스를 왼쪽에 패딩하여 배치 생성.
+    """
+    texts = [_apply_template(tokenizer, msgs, tools) for msgs, tools in batch_inputs]
+
+    inputs = tokenizer(
+        texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=False,
+    )
+    input_len = inputs["input_ids"].shape[1]
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -209,11 +225,14 @@ def run_inference(
             max_new_tokens=max_new_tokens,
             do_sample=False,
             temperature=1.0,
-            pad_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
         )
 
-    new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True)
+    # left padding이므로 모든 시퀀스의 input 구간 길이가 동일 → input_len 이후가 신규 토큰
+    return [
+        tokenizer.decode(out[input_len:], skip_special_tokens=True)
+        for out in output_ids
+    ]
 
 
 # ─────────────────────────────────────────────
@@ -332,33 +351,7 @@ def is_pass(predicted_calls: list[dict], ground_truth, is_irrelevance: bool) -> 
 
 
 # ─────────────────────────────────────────────
-# 단일 샘플 평가
-# ─────────────────────────────────────────────
-
-def evaluate_sample(model, tokenizer, sample: dict, max_new_tokens: int, device: str) -> bool:
-    split_name = sample.get("_split", "")
-    is_irrelevance = "irrelevance" in split_name
-    is_multi_turn = "multi_turn" in split_name
-
-    tools = build_tools(sample.get("function", []))
-    messages = build_messages(sample.get("question", []), is_multi_turn)
-
-    if not messages:
-        return False
-
-    response = run_inference(model, tokenizer, messages, tools, max_new_tokens, device)
-    predicted_calls = parse_tool_calls(response)
-
-    ground_truth = sample.get("ground_truth", [])
-    # multi_turn: ground_truth가 중첩 리스트인 경우 첫 턴만 사용
-    if is_multi_turn and ground_truth and isinstance(ground_truth[0], list):
-        ground_truth = ground_truth[0]
-
-    return is_pass(predicted_calls, ground_truth, is_irrelevance)
-
-
-# ─────────────────────────────────────────────
-# 전체 평가 실행
+# 전체 평가 실행 (배치 방식)
 # ─────────────────────────────────────────────
 
 def evaluate_model(
@@ -368,38 +361,85 @@ def evaluate_model(
     max_new_tokens: int,
     device: str,
     load_in_4bit: bool,
+    batch_size: int = 8,
+    flash_attn: bool = False,
+    tqdm_position: int = 0,
 ) -> tuple[dict[str, bool], str]:
-    """한 모델을 전체 BFCL 샘플에 대해 평가하고 {id: pass} 딕셔너리 반환."""
-    model, tokenizer = load_model(model_name, device, load_in_4bit)
+    """한 모델을 전체 BFCL 샘플에 대해 배치 추론으로 평가하고 {id: pass} 딕셔너리 반환."""
+    model, tokenizer = load_model(model_name, device, load_in_4bit, flash_attn)
 
     results = {}
     failed_samples = 0
     col_name = f"{model_name.split('/')[-1].lower()}_pass"
+    short_name = model_name.split("/")[-1]
 
-    for prompt_meta in tqdm(prompts, desc=model_name.split("/")[-1]):
-        sample_id = prompt_meta["id"]
-        sample = id_to_sample.get(sample_id)
-        if sample is None:
-            results[sample_id] = False
+    # 유효 샘플 필터링
+    valid = []
+    for pm in prompts:
+        sid = pm["id"]
+        if id_to_sample.get(sid) is None:
+            results[sid] = False
             failed_samples += 1
+        else:
+            id_to_sample[sid]["_split"] = pm.get("bfcl_split", "")
+            valid.append(pm)
+
+    # 배치 단위로 추론
+    pbar = tqdm(
+        range(0, len(valid), batch_size),
+        desc=short_name,
+        position=tqdm_position,
+        leave=True,
+    )
+    for batch_start in pbar:
+        batch_metas = valid[batch_start : batch_start + batch_size]
+
+        batch_inputs, batch_ids, batch_samples = [], [], []
+        for pm in batch_metas:
+            sid = pm["id"]
+            sample = id_to_sample[sid]
+            split_name = sample.get("_split", "")
+            is_multi_turn = "multi_turn" in split_name
+
+            msgs = build_messages(sample.get("question", []), is_multi_turn)
+            if not msgs:
+                results[sid] = False
+                failed_samples += 1
+                continue
+
+            tools = build_tools(sample.get("function", []))
+            batch_inputs.append((msgs, tools))
+            batch_ids.append(sid)
+            batch_samples.append(sample)
+
+        if not batch_inputs:
             continue
 
-        sample["_split"] = prompt_meta.get("bfcl_split", "")
-
         try:
-            passed = evaluate_sample(model, tokenizer, sample, max_new_tokens, device)
+            responses = run_batch_inference(model, tokenizer, batch_inputs, max_new_tokens)
         except Exception as e:
-            print(f"\n  [error] {sample_id}: {e}")
-            passed = False
-            failed_samples += 1
+            print(f"\n  [error] batch@{batch_start}: {e}")
+            for sid in batch_ids:
+                results[sid] = False
+                failed_samples += 1
+            continue
 
-        results[sample_id] = passed
+        for sid, response, sample in zip(batch_ids, responses, batch_samples):
+            split_name = sample.get("_split", "")
+            is_irrelevance = "irrelevance" in split_name
+            is_multi_turn = "multi_turn" in split_name
+
+            predicted_calls = parse_tool_calls(response)
+            ground_truth = sample.get("ground_truth", [])
+            if is_multi_turn and ground_truth and isinstance(ground_truth[0], list):
+                ground_truth = ground_truth[0]
+
+            results[sid] = is_pass(predicted_calls, ground_truth, is_irrelevance)
 
     unload_model(model)
 
     n_pass = sum(results.values())
-    print(f"\n{model_name.split('/')[-1]} results:")
-    print(f"  Pass: {n_pass}/{len(results)} ({n_pass/max(len(results),1)*100:.1f}%)")
+    print(f"\n{short_name}: {n_pass}/{len(results)} pass ({n_pass/max(len(results),1)*100:.1f}%)")
     if failed_samples:
         print(f"  Errors/missing: {failed_samples}")
 
@@ -456,6 +496,22 @@ if __name__ == "__main__":
         help="4-bit 양자화 (VRAM 부족 시 사용, bitsandbytes 필요)",
     )
     parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="배치 추론 크기 (기본값: 8). VRAM이 충분하면 16-32로 늘리면 더 빠름.",
+    )
+    parser.add_argument(
+        "--flash-attn",
+        action="store_true",
+        help="Flash Attention 2 활성화 (H100/A100 권장, ~20-40%% 속도 향상)",
+    )
+    parser.add_argument(
+        "--concurrent",
+        action="store_true",
+        help="weak/strong 모델을 각 GPU에서 동시에 평가 (H100 x2 권장, ~2x 속도 향상)",
+    )
     args = parser.parse_args()
 
     # prompts.json 로드
@@ -467,17 +523,49 @@ if __name__ == "__main__":
     print("\nLoading BFCL dataset from GitHub ...")
     id_to_sample = load_bfcl_by_id()
 
-    # weak 모델 평가 (--weak-device, 기본 cuda:0)
-    weak_results, weak_col = evaluate_model(
-        args.weak_model, prompts, id_to_sample,
-        args.max_new_tokens, args.weak_device, args.load_in_4bit,
+    eval_kwargs = dict(
+        max_new_tokens=args.max_new_tokens,
+        load_in_4bit=args.load_in_4bit,
+        batch_size=args.batch_size,
+        flash_attn=args.flash_attn,
     )
 
-    # strong 모델 평가 (--strong-device, 기본 cuda:1); weak 언로드 후 실행
-    strong_results, strong_col = evaluate_model(
-        args.strong_model, prompts, id_to_sample,
-        args.max_new_tokens, args.strong_device, args.load_in_4bit,
-    )
+    if args.concurrent:
+        # weak(cuda:0)와 strong(cuda:1)을 thread로 동시 평가.
+        # 두 모델이 서로 다른 GPU에 있으므로 CUDA 충돌 없음.
+        print("\n[concurrent] weak/strong 모델을 동시에 평가합니다 ...")
+        weak_results = {}
+        strong_results = {}
+
+        def _eval_weak():
+            r, _ = evaluate_model(
+                args.weak_model, prompts, id_to_sample,
+                device=args.weak_device, tqdm_position=0, **eval_kwargs
+            )
+            weak_results.update(r)
+
+        def _eval_strong():
+            r, _ = evaluate_model(
+                args.strong_model, prompts, id_to_sample,
+                device=args.strong_device, tqdm_position=1, **eval_kwargs
+            )
+            strong_results.update(r)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_eval_weak)
+            f2 = pool.submit(_eval_strong)
+            f1.result()
+            f2.result()
+    else:
+        # 순차 평가 (기본)
+        weak_results, _ = evaluate_model(
+            args.weak_model, prompts, id_to_sample,
+            device=args.weak_device, tqdm_position=0, **eval_kwargs
+        )
+        strong_results, _ = evaluate_model(
+            args.strong_model, prompts, id_to_sample,
+            device=args.strong_device, tqdm_position=0, **eval_kwargs
+        )
 
     # eval_results.json 생성
     output = []
@@ -498,7 +586,18 @@ if __name__ == "__main__":
     with open(args.output_path, "w") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f"\nSaved eval_results → {args.output_path}  ({len(output)} samples)")
+    # 최종 요약 출력
+    n_total = len(output)
+    n_weak_pass = sum(weak_results.values())
+    n_strong_pass = sum(strong_results.values())
+    print("\n" + "=" * 60)
+    print("BFCL Evaluation Summary")
+    print("=" * 60)
+    print(f"  Total samples : {n_total}")
+    print(f"  Weak   model  ({weak_short:>20}) : {n_weak_pass:4d}/{n_total}  ({n_weak_pass/max(n_total,1)*100:.1f}%)")
+    print(f"  Strong model  ({strong_short:>20}) : {n_strong_pass:4d}/{n_total}  ({n_strong_pass/max(n_total,1)*100:.1f}%)")
+    print("=" * 60)
+    print(f"\nSaved eval_results → {args.output_path}  ({n_total} samples)")
     print(
         "\n[다음 단계] prepare_bfcl_data.py convert 실행 시 "
         f"--weak-model {weak_short} --strong-model {strong_short} 로 지정하세요."
