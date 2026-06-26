@@ -41,14 +41,13 @@ Output:
 
 ### Step 2: Evaluate Models on BFCL
 
-Pass any number of models to evaluate. Available GPUs are detected automatically and models are distributed across them — up to N models run concurrently on N GPUs, then the next batch, and so on:
+Pass any number of models to evaluate. Each model uses all available GPUs via `device_map="auto"` and the batch size is auto-detected from GPU memory:
 
 ```bash
 python routellm/evals/eval_bfcl_models.py \
   --prompts-path ./bfcl_data/prompts.json \
   --output-path ./eval_results.json \
-  --models Qwen/Qwen3.5-0.6B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B \
-  --batch-size 16
+  --models Qwen/Qwen3.5-0.6B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B
 ```
 
 Options:
