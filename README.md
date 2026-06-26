@@ -44,7 +44,7 @@ Output:
 Run both models on the BFCL prompts to get pass/fail results. Each model runs on its own GPU:
 
 ```bash
-python routellm/routers/matrix_factorization/eval_bfcl_models.py \
+python routellm/evals/eval_bfcl_models.py \
   --prompts-path ./bfcl_data/prompts.json \
   --output-path ./eval_results.json \
   --weak-model Qwen/Qwen3.5-2B \
@@ -59,6 +59,18 @@ Options:
 - `--max-new-tokens` — max generation length (default: 512)
 
 Output: `eval_results.json` — per-sample pass/fail for each model.
+
+The script prints a summary at the end:
+
+```
+============================================================
+BFCL Evaluation Summary
+============================================================
+  Total samples :  1234
+  Weak   model  (        qwen3.5-2b) :  768/1234  (62.2%)
+  Strong model  (        qwen3.5-9b) : 1003/1234  (81.3%)
+============================================================
+```
 
 > **Note:** The script prints the short model names used for the next step, e.g. `--weak-model qwen3.5-2b --strong-model qwen3.5-9b`.
 
@@ -81,11 +93,12 @@ Output:
 - `bfcl_data/test_data.json` — held-out test set for evaluation
 
 **Labeling rule:**
-| Weak passes | Strong passes | Label |
-|---|---|---|
-| ✓ | ✓ | Route to weak (weak is sufficient) |
-| ✗ | ✓ | Route to strong (strong is needed) |
-| ✓ or ✗ | ✗ | Discarded (no routing signal) |
+| Weak passes | Strong passes | Label | Reason |
+|---|---|---|---|
+| ✓ | ✓ | Route to weak | Weak is sufficient |
+| ✗ | ✓ | Route to strong | Strong is needed |
+| ✓ | ✗ | Route to weak | Weak succeeded; strong failed |
+| ✗ | ✗ | Route to strong | Neither local model succeeded → send to frontier |
 
 ### Step 4: Train the MF Router
 

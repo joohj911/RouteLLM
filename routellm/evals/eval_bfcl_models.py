@@ -498,7 +498,18 @@ if __name__ == "__main__":
     with open(args.output_path, "w") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f"\nSaved eval_results → {args.output_path}  ({len(output)} samples)")
+    # 최종 요약 출력
+    n_total = len(output)
+    n_weak_pass = sum(weak_results.values())
+    n_strong_pass = sum(strong_results.values())
+    print("\n" + "=" * 60)
+    print("BFCL Evaluation Summary")
+    print("=" * 60)
+    print(f"  Total samples : {n_total}")
+    print(f"  Weak   model  ({weak_short:>20}) : {n_weak_pass:4d}/{n_total}  ({n_weak_pass/max(n_total,1)*100:.1f}%)")
+    print(f"  Strong model  ({strong_short:>20}) : {n_strong_pass:4d}/{n_total}  ({n_strong_pass/max(n_total,1)*100:.1f}%)")
+    print("=" * 60)
+    print(f"\nSaved eval_results → {args.output_path}  ({n_total} samples)")
     print(
         "\n[다음 단계] prepare_bfcl_data.py convert 실행 시 "
         f"--weak-model {weak_short} --strong-model {strong_short} 로 지정하세요."
