@@ -430,7 +430,7 @@ def auto_batch_size(
     if per_sample <= 0:
         batch = 1
     else:
-        batch = max(1, min(1 + int(available / per_sample), 512))
+        batch = max(1, min(1 + int(available / per_sample), 128))
 
     gb, mb = 1024 ** 3, 1024 ** 2
     gpu_label = f"{len(gpu_indices)}×GPU" if len(gpu_indices) > 1 else f"GPU:{gpu_indices[0]}"
@@ -475,16 +475,30 @@ def evaluate_model(
 
     # batch_size=0 → GPU 메모리 기반 자동 탐지
     if batch_size == 0:
-        calib_texts = []
-        for pm in valid[:2]:
+        # 전체 데이터에서 function이 있는 샘플들을 렌더링해 가장 긴 2개를 calibration에 사용.
+        # 첫 2개만 쓰면 짧은 샘플(irrelevance 등)이 걸려 per_sample을 과소추정할 수 있음.
+        pool = []
+        stride = max(1, len(valid) // 20)  # 최대 ~20개 후보를 고르게 샘플링
+        for pm in valid[::stride]:
             sid = pm["id"]
             sample = id_to_sample[sid]
+            if not sample.get("function"):  # function 없는 샘플 제외
+                continue
             msgs = build_messages(sample.get("question", []))
             if msgs:
-                tools = build_tools(sample.get("function", []))
-                calib_texts.append(_apply_template(tokenizer, msgs, tools))
-            if len(calib_texts) == 2:
-                break
+                tools = build_tools(sample["function"])
+                pool.append(_apply_template(tokenizer, msgs, tools))
+        # 렌더링된 텍스트 중 가장 긴 2개 선택
+        pool.sort(key=len, reverse=True)
+        calib_texts = pool[:2]
+        if not calib_texts:  # function 있는 샘플이 없으면 첫 2개로 폴백
+            for pm in valid[:2]:
+                sid = pm["id"]
+                sample = id_to_sample[sid]
+                msgs = build_messages(sample.get("question", []))
+                if msgs:
+                    tools = build_tools(sample.get("function", []))
+                    calib_texts.append(_apply_template(tokenizer, msgs, tools))
         batch_size = auto_batch_size(model, tokenizer, calib_texts, max_new_tokens, device)
 
     pbar = tqdm(
@@ -515,11 +529,18 @@ def evaluate_model(
         try:
             responses = run_batch_inference(model, tokenizer, batch_inputs, max_new_tokens)
         except Exception as e:
-            print(f"\n  [error] batch@{batch_start}: {e}")
-            for sid in batch_ids:
-                results[sid] = False
-                failed_samples += 1
-            continue
+            # Batch too large (OOM or 32-bit index overflow) — retry one sample at a time
+            print(f"\n  [warn] batch@{batch_start} failed ({type(e).__name__}), retrying sample-by-sample ...")
+            torch.cuda.empty_cache()
+            responses = []
+            for single_input in batch_inputs:
+                try:
+                    r = run_batch_inference(model, tokenizer, [single_input], max_new_tokens)
+                    responses.extend(r)
+                except Exception as e2:
+                    print(f"\n  [error] single sample failed: {e2}")
+                    responses.append("")
+                    failed_samples += 1
 
         for sid, response, sample in zip(batch_ids, responses, batch_samples):
             split_name = sample.get("_split", "")
@@ -531,11 +552,11 @@ def evaluate_model(
     unload_model(model)
 
     n_pass = sum(results.values())
-    print(f"\n{short_name}: {n_pass}/{len(results)} pass ({n_pass/max(len(results),1)*100:.1f}%)")
+    print(f"\n{model_name}: {n_pass}/{len(results)} pass ({n_pass/max(len(results),1)*100:.1f}%)")
     if failed_samples:
         print(f"  Errors/missing: {failed_samples}")
 
-    return results, short_name
+    return results, model_name
 
 
 # ─────────────────────────────────────────────
