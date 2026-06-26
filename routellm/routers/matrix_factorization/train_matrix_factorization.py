@@ -116,12 +116,13 @@ def evaluator(net, test_iter, device):
             models_b = models_b.to(device)
             prompts = prompts.to(device)
 
-            logits = net(models_a, models_b, prompts)
+            # test=True: eval 중에는 Gaussian noise 없이 clean embedding 사용
+            logits = net(models_a, models_b, prompts, test=True)
             labels = torch.ones_like(logits)
             loss = ls_fn(logits, labels)
-            pred_labels = net.predict(models_a, models_b, prompts)
+            pred_labels = logits > 0
 
-            correct += (pred_labels == labels).sum().item()
+            correct += (pred_labels == labels.bool()).sum().item()
             ls_list.append(loss.item())
             num_samples += labels.shape[0]
 
@@ -139,12 +140,14 @@ def train_loops(
     num_epochs,
     device="cuda",
     evaluator=evaluator,
+    output_path=None,
     **kwargs,
 ):
     optimizer = Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
     loss = nn.BCEWithLogitsLoss(reduction="mean")
 
     best_test_acc = -1
+    best_state = None
 
     def train_epoch():
         net.train()
@@ -165,23 +168,23 @@ def train_loops(
             n += len(models_a)
         return train_loss_sum / n
 
-    train_losses = []
-    test_losses = []
-    test_acces = []
     progress_bar = tqdm(total=num_epochs)
 
     for epoch in range(num_epochs):
         train_ls = train_epoch()
-        train_losses.append(train_ls)
         info = {"train_loss": train_ls, "epoch": epoch}
 
         if evaluator:
             test_ls, test_acc = evaluator(net, test_iter, device)
-            test_losses.append(test_ls)
-            test_acces.append(test_acc)
 
             if test_acc > best_test_acc:
                 best_test_acc = test_acc
+                # Q (prompt embeddings)는 추론 시 불필요하므로 제외
+                best_state = {
+                    k: v.cpu().clone()
+                    for k, v in net.state_dict().items()
+                    if not k.startswith("Q.")
+                }
 
             info.update(
                 {
@@ -195,7 +198,7 @@ def train_loops(
         progress_bar.update(1)
 
     progress_bar.close()
-    return best_test_acc
+    return best_test_acc, best_state
 
 
 if __name__ == "__main__":
@@ -249,7 +252,7 @@ if __name__ == "__main__":
         npy_path=args.npy_path,
     ).to(args.device)
 
-    best_acc = train_loops(
+    best_acc, best_state = train_loops(
         model,
         train_loader,
         val_loader,
@@ -258,9 +261,12 @@ if __name__ == "__main__":
         alpha=args.alpha,
         num_epochs=args.num_epochs,
         device=args.device,
+        output_path=args.output_path,
     )
 
-    # Q (prompt embeddings)는 추론 시 불필요하므로 제외하여 저장
-    state = {k: v for k, v in model.state_dict().items() if not k.startswith("Q.")}
-    torch.save(state, args.output_path)
+    # best val acc 시점의 가중치 저장 (last epoch이 아님)
+    save_state = best_state if best_state is not None else {
+        k: v for k, v in model.state_dict().items() if not k.startswith("Q.")
+    }
+    torch.save(save_state, args.output_path)
     print(f"\nSaved model → {args.output_path}  (best_val_acc={best_acc:.4f})")
