@@ -53,7 +53,7 @@ python routellm/evals/eval_bfcl_models.py \
 
 Options:
 - `--models` — one or more HuggingFace model IDs to evaluate
-- `--batch-size` — number of samples per `model.generate()` call (default: 8; increase to 16-32 if VRAM allows)
+- `--batch-size` — inference batch size per `model.generate()` call (default: 0 = auto-detect from GPU memory at 80% utilization)
 - `--load-in-4bit` — 4-bit quantization for low-VRAM setups (requires `bitsandbytes`)
 - `--max-new-tokens` — max generation length (default: 512)
 

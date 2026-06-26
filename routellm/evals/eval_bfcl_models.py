@@ -347,6 +347,78 @@ def is_pass(predicted_calls: list[dict], ground_truth: list, is_irrelevance: boo
 
 
 # ─────────────────────────────────────────────
+# 자동 배치 크기 탐지
+# ─────────────────────────────────────────────
+
+def auto_batch_size(
+    model,
+    tokenizer,
+    calib_texts: list[str],
+    max_new_tokens: int,
+    device: str,
+    target_fraction: float = 0.8,
+) -> int:
+    """
+    2-point GPU memory calibration to find the largest safe batch size.
+
+    Runs inference with batch=1 and batch=2, measures per-sample memory cost,
+    then computes how many samples fit within target_fraction of total GPU memory.
+    Returns 1 for CPU or if calibration fails.
+    """
+    if not torch.cuda.is_available() or device == "cpu":
+        return 1
+
+    device_idx = int(device.split(":")[1]) if ":" in device else torch.cuda.current_device()
+    total_mem = torch.cuda.get_device_properties(device_idx).total_memory
+
+    def _run(texts: list[str]) -> int:
+        torch.cuda.reset_peak_memory_stats(device_idx)
+        enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=False)
+        enc = {k: v.to(model.device) for k, v in enc.items()}
+        with torch.no_grad():
+            out = model.generate(
+                **enc,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=1.0,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+        del enc, out
+        torch.cuda.empty_cache()
+        return torch.cuda.max_memory_allocated(device_idx)
+
+    if not calib_texts:
+        return 1
+
+    text_a = calib_texts[0]
+    text_b = calib_texts[1] if len(calib_texts) > 1 else calib_texts[0]
+
+    try:
+        peak_1 = _run([text_a])
+        peak_2 = _run([text_a, text_b])
+    except Exception as e:
+        print(f"  [auto_batch_size] calibration failed: {e} — defaulting to 1")
+        return 1
+
+    per_sample = peak_2 - peak_1
+    available = total_mem * target_fraction - peak_1
+
+    if per_sample <= 0:
+        batch = 1
+    else:
+        batch = max(1, min(1 + int(available / per_sample), 512))
+
+    gb, mb = 1024 ** 3, 1024 ** 2
+    print(
+        f"  GPU memory: total={total_mem/gb:.1f}GB, "
+        f"model+overhead={peak_1/gb:.2f}GB, "
+        f"per_sample={per_sample/mb:.1f}MB "
+        f"→ auto batch_size={batch}"
+    )
+    return batch
+
+
+# ─────────────────────────────────────────────
 # 단일 모델 평가
 # ─────────────────────────────────────────────
 
@@ -358,7 +430,7 @@ def evaluate_model(
     max_new_tokens: int,
     device: str,
     load_in_4bit: bool,
-    batch_size: int = 8,
+    batch_size: int = 0,
     tqdm_position: int = 0,
 ) -> tuple[dict[str, bool], str]:
     """한 모델을 전체 BFCL 샘플에 대해 배치 추론으로 평가하고 {id: pass} 딕셔너리 반환."""
@@ -377,6 +449,20 @@ def evaluate_model(
         else:
             id_to_sample[sid]["_split"] = pm.get("bfcl_split", "")
             valid.append(pm)
+
+    # batch_size=0 → GPU 메모리 기반 자동 탐지
+    if batch_size == 0:
+        calib_texts = []
+        for pm in valid[:2]:
+            sid = pm["id"]
+            sample = id_to_sample[sid]
+            msgs = build_messages(sample.get("question", []))
+            if msgs:
+                tools = build_tools(sample.get("function", []))
+                calib_texts.append(_apply_template(tokenizer, msgs, tools))
+            if len(calib_texts) == 2:
+                break
+        batch_size = auto_batch_size(model, tokenizer, calib_texts, max_new_tokens, device)
 
     pbar = tqdm(
         range(0, len(valid), batch_size),
@@ -465,8 +551,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
-        help="배치 추론 크기 (기본값: 8). VRAM이 충분하면 16-32로 늘리면 더 빠름.",
+        default=0,
+        help="배치 추론 크기. 기본값 0 = GPU 메모리(80%% 목표)에서 자동 탐지.",
     )
     args = parser.parse_args()
 
