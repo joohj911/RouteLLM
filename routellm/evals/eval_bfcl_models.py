@@ -21,7 +21,7 @@ BFCL 카테고리별 평가 기준:
 """
 
 import argparse
-import ast
+import copy
 import json
 import re
 import urllib.request
@@ -140,11 +140,9 @@ def load_bfcl_by_id() -> dict:
 
 def load_bfcl_answers_by_id() -> dict:
     """
-    possible_answer/ 디렉토리에서 정답을 로드하여 {prefixed_id: ground_truth} 반환.
+    possible_answer/ 디렉토리에서 정답을 로드하여 {id: ground_truth} 반환.
 
-    answer 파일의 ID 형식 : "simple_python_0"
-    question 파일의 ID 형식: "BFCL_v4_simple_python_0"
-    → "BFCL_v4_" prefix를 추가하여 통일.
+    answer 파일의 ID 형식: "simple_python_0"  (prefix 없음 — question 파일과 동일)
 
     정답 형식:
       [{"func_name": {"param": [acceptable_values], ...}}]
@@ -154,7 +152,6 @@ def load_bfcl_answers_by_id() -> dict:
       live_irrelevance → tool call 없으면 pass
       live_relevance  → tool call 있으면 pass (구체적 정답 없이 호출 여부만 평가)
     """
-    # answer 파일이 없는 것이 설계상 정상인 split
     NO_ANSWER_FILE_SPLITS = {
         "BFCL_v4_irrelevance",
         "BFCL_v4_live_irrelevance",
@@ -164,16 +161,16 @@ def load_bfcl_answers_by_id() -> dict:
     id_to_answer = {}
     for split in BFCL_SPLITS:
         if split in NO_ANSWER_FILE_SPLITS:
-            continue  # pass/fail은 is_pass()에서 tool call 유무로 판단
+            continue
         try:
             samples = _fetch_json(f"{GORILLA_ANSWER_BASE}/{split}.json")
         except Exception as e:
             print(f"  [skip answers] {split}: {e}")
             continue
         for sample in samples:
-            raw_id = sample.get("id", "")
-            prefixed_id = raw_id if raw_id.startswith("BFCL_v4_") else f"BFCL_v4_{raw_id}"
-            id_to_answer[prefixed_id] = sample.get("ground_truth", [])
+            # Answer file IDs have no BFCL_v4_ prefix — store as-is to match question IDs
+            sample_id = sample.get("id", "")
+            id_to_answer[sample_id] = sample.get("ground_truth", [])
     print(f"Loaded answers for {len(id_to_answer)} samples.")
     return id_to_answer
 
@@ -182,16 +179,64 @@ def load_bfcl_answers_by_id() -> dict:
 # 프롬프트 포맷
 # ─────────────────────────────────────────────
 
+# BFCL uses Gorilla-style type names; map to OpenAPI/JSON Schema types for the model.
+# Source: gorilla/berkeley-function-call-leaderboard/bfcl_eval/constants/type_mappings.py
+_GORILLA_TO_OPENAPI = {
+    "integer": "integer", "number": "number", "float": "number",
+    "string": "string", "boolean": "boolean", "bool": "boolean",
+    "array": "array", "list": "array", "tuple": "array",
+    "dict": "object", "object": "object",
+    "any": "string", "byte": "integer", "short": "integer",
+    "long": "integer", "double": "number", "char": "string",
+    "ArrayList": "array", "Array": "array",
+    "HashMap": "object", "Hashtable": "object",
+    "Queue": "array", "Stack": "array",
+    "Any": "string", "String": "string", "Bigint": "integer",
+}
+
+
+def _cast_props(props: dict) -> dict:
+    """Recursively map Gorilla type names to OpenAPI types in a properties dict."""
+    result = copy.deepcopy(props)
+    for key, val in result.items():
+        if "type" not in val:
+            val["type"] = "string"
+        else:
+            val["type"] = _GORILLA_TO_OPENAPI.get(val["type"], "string")
+        if val["type"] in ("array", "object"):
+            if "properties" in val:
+                val["properties"] = _cast_props(val["properties"])
+            elif "items" in val:
+                items = val["items"]
+                items["type"] = _GORILLA_TO_OPENAPI.get(items.get("type", "string"), "string")
+                if items["type"] == "object" and "properties" in items:
+                    items["properties"] = _cast_props(items["properties"])
+    return result
+
+
 def build_tools(function_list: list) -> list:
-    """BFCL function 리스트를 OpenAI 호환 tool 형식으로 변환."""
+    """
+    BFCL function 리스트를 OpenAI 호환 tool 형식으로 변환.
+
+    공식 BFCL convert_to_tool() 로직을 재현:
+      - parameters.type "dict" → "object"  (Gorilla → OpenAPI 타입 변환)
+      - 모든 property type을 OpenAPI 타입으로 변환 (list→array, float→number 등)
+      - 함수 이름의 "." → "_"  (OpenAI 함수명 규칙: ^[a-zA-Z0-9_-]{1,64}$)
+    """
     tools = []
     for func in function_list:
+        func = copy.deepcopy(func)
+        name = re.sub(r"\.", "_", func.get("name", ""))
+        params = copy.deepcopy(func.get("parameters", {"type": "object", "properties": {}}))
+        params["type"] = "object"  # BFCL uses "dict"; OpenAI requires "object"
+        if "properties" in params:
+            params["properties"] = _cast_props(params["properties"])
         tools.append({
             "type": "function",
             "function": {
-                "name": func.get("name", ""),
+                "name": name,
                 "description": func.get("description", ""),
-                "parameters": func.get("parameters", {"type": "object", "properties": {}}),
+                "parameters": params,
             },
         })
     return tools
