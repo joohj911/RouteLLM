@@ -102,12 +102,6 @@ def load_model(model_name: str, device: str, load_in_4bit: bool):
     return model, tokenizer
 
 
-def unload_model(model):
-    del model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
 # ─────────────────────────────────────────────
 # BFCL 데이터 로드
 # ─────────────────────────────────────────────
@@ -290,8 +284,11 @@ def run_batch_inference(
             pad_token_id=tokenizer.pad_token_id,
         )
 
+    # skip_special_tokens=False: Qwen adds <tool_call>/</tool_call> as special tokens.
+    # Skipping them strips the tags and breaks multi-call regex parsing (parallel/multiple).
+    # <|im_end|> in the output is harmless — parse_tool_calls ignores it.
     return [
-        tokenizer.decode(out[input_len:], skip_special_tokens=True)
+        tokenizer.decode(out[input_len:], skip_special_tokens=False)
         for out in output_ids
     ]
 
@@ -372,6 +369,12 @@ def calls_match_bfcl(predicted: dict, gt_entry: dict) -> bool:
         return False
 
     pred_args = predicted.get("arguments", {})
+    # Some models serialise arguments as a JSON string rather than a dict
+    if isinstance(pred_args, str):
+        try:
+            pred_args = json.loads(pred_args)
+        except json.JSONDecodeError:
+            return False
     gt_params = gt_entry[func_name]
 
     # Extra params: GT에 정의되지 않은 파라미터 → fail
@@ -608,7 +611,11 @@ def evaluate_model(
             ground_truth = id_to_answer.get(sid, [])
             results[sid] = is_pass(predicted_calls, ground_truth, is_irrelevance)
 
-    unload_model(model)
+    # Explicitly release GPU memory before returning so the next model can load cleanly.
+    # del must happen in this scope — a helper function's del only removes its local ref.
+    del model, tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     n_pass = sum(results.values())
     print(f"\n{model_name}: {n_pass}/{len(results)} pass ({n_pass/max(len(results),1)*100:.1f}%)")
