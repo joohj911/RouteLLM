@@ -57,7 +57,7 @@ Options:
 - `--load-in-4bit` — 4-bit quantization for low-VRAM setups (requires `bitsandbytes`)
 - `--max-new-tokens` — max generation length (default: 512)
 
-GPU scheduling: with 2 GPUs and 3 models, model 1 runs on `cuda:0` and model 2 on `cuda:1` simultaneously, then model 3 runs on `cuda:0`. No flags needed — GPU count is detected via `torch.cuda.device_count()`.
+GPU scheduling: each model is evaluated sequentially using all available GPUs via `device_map="auto"` (accelerate tensor parallelism). With 2 GPUs and 3 models, model 1 uses both GPUs, then model 2 uses both, then model 3. No flags needed — GPU count is detected via `torch.cuda.device_count()`.
 
 Output: `eval_results.json` — per-sample pass/fail for each model.
 

@@ -22,7 +22,6 @@ BFCL 카테고리별 평가 기준:
 
 import argparse
 import ast
-import concurrent.futures
 import json
 import re
 import urllib.request
@@ -361,18 +360,31 @@ def auto_batch_size(
     """
     2-point GPU memory calibration to find the largest safe batch size.
 
-    Runs inference with batch=1 and batch=2, measures per-sample memory cost,
-    then computes how many samples fit within target_fraction of total GPU memory.
+    For device_map="auto" (device="cuda"), sums memory across all GPUs.
+    For a specific device ("cuda:0"), measures only that GPU.
     Returns 1 for CPU or if calibration fails.
     """
     if not torch.cuda.is_available() or device == "cpu":
         return 1
 
-    device_idx = int(device.split(":")[1]) if ":" in device else torch.cuda.current_device()
-    total_mem = torch.cuda.get_device_properties(device_idx).total_memory
+    if ":" in device:
+        gpu_indices = [int(device.split(":")[1])]
+    else:
+        gpu_indices = list(range(torch.cuda.device_count()))
+
+    total_mem = sum(
+        torch.cuda.get_device_properties(i).total_memory for i in gpu_indices
+    )
+
+    def _reset():
+        for i in gpu_indices:
+            torch.cuda.reset_peak_memory_stats(i)
+
+    def _peak():
+        return sum(torch.cuda.max_memory_allocated(i) for i in gpu_indices)
 
     def _run(texts: list[str]) -> int:
-        torch.cuda.reset_peak_memory_stats(device_idx)
+        _reset()
         enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=False)
         enc = {k: v.to(model.device) for k, v in enc.items()}
         with torch.no_grad():
@@ -385,7 +397,7 @@ def auto_batch_size(
             )
         del enc, out
         torch.cuda.empty_cache()
-        return torch.cuda.max_memory_allocated(device_idx)
+        return _peak()
 
     if not calib_texts:
         return 1
@@ -409,8 +421,9 @@ def auto_batch_size(
         batch = max(1, min(1 + int(available / per_sample), 512))
 
     gb, mb = 1024 ** 3, 1024 ** 2
+    gpu_label = f"{len(gpu_indices)}×GPU" if len(gpu_indices) > 1 else f"GPU:{gpu_indices[0]}"
     print(
-        f"  GPU memory: total={total_mem/gb:.1f}GB, "
+        f"  {gpu_label} memory: total={total_mem/gb:.1f}GB, "
         f"model+overhead={peak_1/gb:.2f}GB, "
         f"per_sample={per_sample/mb:.1f}MB "
         f"→ auto batch_size={batch}"
@@ -431,14 +444,12 @@ def evaluate_model(
     device: str,
     load_in_4bit: bool,
     batch_size: int = 0,
-    tqdm_position: int = 0,
 ) -> tuple[dict[str, bool], str]:
     """한 모델을 전체 BFCL 샘플에 대해 배치 추론으로 평가하고 {id: pass} 딕셔너리 반환."""
     model, tokenizer = load_model(model_name, device, load_in_4bit)
 
     results = {}
     failed_samples = 0
-    short_name = model_name  # full HF ID used as key throughout the pipeline
 
     valid = []
     for pm in prompts:
@@ -466,8 +477,7 @@ def evaluate_model(
 
     pbar = tqdm(
         range(0, len(valid), batch_size),
-        desc=short_name,
-        position=tqdm_position,
+        desc=model_name,
         leave=True,
     )
     for batch_start in pbar:
@@ -567,63 +577,32 @@ if __name__ == "__main__":
     print("\nLoading BFCL ground truth from GitHub (possible_answer/) ...")
     id_to_answer = load_bfcl_answers_by_id()
 
-    # GPU 수 자동 탐지: 사용 가능한 GPU만큼 모델을 동시에 평가
+    # GPU 수 자동 탐지: 모델 하나당 사용 가능한 GPU 전체를 device_map="auto"로 사용
     n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     if n_gpus == 0:
-        print("\nNo GPU detected — evaluating sequentially on CPU.")
-        devices = ["cpu"] * len(args.models)
-        concurrency = 1
+        device = "cpu"
+        print("\nNo GPU detected — evaluating on CPU.")
     else:
-        print(f"\nDetected {n_gpus} GPU(s) — evaluating {min(n_gpus, len(args.models))} model(s) concurrently.")
-        # round-robin GPU 할당: 모델 인덱스 % n_gpus
-        devices = [f"cuda:{i % n_gpus}" for i in range(len(args.models))]
-        concurrency = n_gpus
+        device = "cuda"  # device_map="auto" → accelerate가 모든 GPU에 분산
+        print(f"\nDetected {n_gpus} GPU(s) — each model uses all {n_gpus} GPU(s) via device_map=auto.")
 
     eval_kwargs = dict(
         prompts=prompts,
         id_to_sample=id_to_sample,
         id_to_answer=id_to_answer,
         max_new_tokens=args.max_new_tokens,
+        device=device,
         load_in_4bit=args.load_in_4bit,
         batch_size=args.batch_size,
     )
 
-    all_model_results = {}  # short_name → {id: bool}
+    all_model_results = {}  # model_name → {id: bool}
 
-    # 모델을 concurrency 단위로 배치 처리
-    for batch_start in range(0, len(args.models), concurrency):
-        batch_models = args.models[batch_start : batch_start + concurrency]
-        batch_devices = devices[batch_start : batch_start + concurrency]
-        batch_size = len(batch_models)
-
-        print(f"\n--- Batch {batch_start // concurrency + 1}: {batch_models} ---")
-
-        if batch_size == 1:
-            # 단일 모델: 직접 실행
-            results, name = evaluate_model(
-                batch_models[0], device=batch_devices[0], tqdm_position=0, **eval_kwargs
-            )
-            all_model_results[name] = results
-        else:
-            # 여러 모델: 각 GPU에서 동시에 실행
-            batch_results = {}
-
-            def _run(model_name, device, position):
-                r, n = evaluate_model(
-                    model_name, device=device, tqdm_position=position, **eval_kwargs
-                )
-                return n, r
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as pool:
-                futures = [
-                    pool.submit(_run, m, d, i)
-                    for i, (m, d) in enumerate(zip(batch_models, batch_devices))
-                ]
-                for f in concurrent.futures.as_completed(futures):
-                    name, results = f.result()
-                    batch_results[name] = results
-
-            all_model_results.update(batch_results)
+    # 모델을 순차적으로 평가 (각 모델이 전체 GPU를 사용)
+    for i, model_name in enumerate(args.models):
+        print(f"\n[{i+1}/{len(args.models)}] Evaluating {model_name}")
+        results, name = evaluate_model(model_name, **eval_kwargs)
+        all_model_results[name] = results
 
     # eval_results.json 생성
     output = []
