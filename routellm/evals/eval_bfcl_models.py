@@ -291,15 +291,17 @@ def parse_tool_calls(response: str) -> list[dict]:
 # 정답 비교
 # ─────────────────────────────────────────────
 
-def normalize(v) -> str:
-    return str(v).lower().strip()
+def _standardize(v) -> str:
+    """공식 BFCL string_checker와 동일: 공백·,./-_*^ 제거, 소문자, 단따옴표→쌍따옴표."""
+    s = re.sub(r"[ ,./\-_*^]", "", str(v))
+    return s.lower().replace("'", '"')
 
 
 def _val_matches(pred_val, acceptable_values: list) -> bool:
-    """예측값이 acceptable_values 중 하나와 일치하는지 확인 (문자열 + 숫자 비교)."""
-    norm_pred = normalize(pred_val)
+    """예측값이 acceptable_values 중 하나와 일치하는지 확인."""
+    norm_pred = _standardize(pred_val)
     for av in acceptable_values:
-        if normalize(av) == norm_pred:
+        if _standardize(av) == norm_pred:
             return True
         try:
             if float(pred_val) == float(av):
@@ -311,39 +313,62 @@ def _val_matches(pred_val, acceptable_values: list) -> bool:
 
 def calls_match_bfcl(predicted: dict, gt_entry: dict) -> bool:
     """
-    BFCL GT 형식으로 함수 호출 일치 확인.
+    공식 BFCL simple_function_checker 로직에 맞춘 단일 call 비교.
     gt_entry 형식: {"func_name": {"param": [acceptable_values], ...}}
+
+    - extra params (GT에 없는 파라미터) → fail
+    - optional params ("" in acceptable_values) → 생략 허용
+    - string 비교는 _standardize 적용
     """
     if not gt_entry:
         return False
     func_name = next(iter(gt_entry))
-    if normalize(predicted.get("name", "")) != normalize(func_name):
+    if _standardize(predicted.get("name", "")) != _standardize(func_name):
         return False
+
     pred_args = predicted.get("arguments", {})
-    for key, acceptable_values in gt_entry[func_name].items():
+    gt_params = gt_entry[func_name]
+
+    # Extra params: GT에 정의되지 않은 파라미터 → fail
+    for key in pred_args:
+        if key not in gt_params:
+            return False
+
+    # GT 파라미터 검사
+    for key, acceptable_values in gt_params.items():
         if key not in pred_args:
-            return False
-        if not _val_matches(pred_args[key], acceptable_values):
-            return False
+            # "" in acceptable_values → optional (생략 가능)
+            if "" not in acceptable_values:
+                return False
+        else:
+            if not _val_matches(pred_args[key], acceptable_values):
+                return False
+
     return True
 
 
 def is_pass(predicted_calls: list[dict], ground_truth: list, is_irrelevance: bool) -> bool:
     """
-    BFCL 정답과 모델 출력을 비교하여 pass/fail 반환.
+    공식 BFCL 평가 로직에 맞춘 pass/fail 판정.
 
     ground_truth 형식: [{"func_name": {"param": [acceptable_values]}}]
+
+    - simple   : len == 1 정확히 일치
+    - parallel : len 정확히 일치, 순서 무관 1:1 매칭
+    - multiple : len 정확히 일치, 순서 무관 1:1 매칭
     """
     if is_irrelevance:
         return len(predicted_calls) == 0
 
     if not ground_truth:
-        # 정답 파일 없는 split (live_relevance 등): 함수 호출이 있으면 pass로 간주
+        # live_relevance: 구체적 GT 없음, 호출이 있으면 pass
         return len(predicted_calls) > 0
 
-    if len(predicted_calls) < len(ground_truth):
+    # 공식 BFCL: 예측 call 수가 GT와 정확히 일치해야 함
+    if len(predicted_calls) != len(ground_truth):
         return False
 
+    # 순서 무관 1:1 매칭 (parallel_function_checker_no_order와 동일)
     matched = [False] * len(predicted_calls)
     for gt_entry in ground_truth:
         found = False
