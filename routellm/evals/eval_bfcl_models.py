@@ -84,10 +84,8 @@ def load_model(model_name: str, device: str, load_in_4bit: bool):
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # H100은 bfloat16이 float16보다 빠르고 수치적으로 안정적
-    kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
-    # SDPA: PyTorch 2.0+ 내장, flash-attn 패키지 없이도 H100에서 fused kernel 사용
-    if device != "cpu":
-        kwargs["attn_implementation"] = "sdpa"
+    # Qwen3.5는 linear attention(SSM hybrid) 아키텍처이므로 attn_implementation 설정 불필요
+    kwargs = {"trust_remote_code": True, "dtype": torch.bfloat16}
     if load_in_4bit:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
