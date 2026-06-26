@@ -243,7 +243,11 @@ if __name__ == "__main__":
     else:
         config = {}
         if args.mf_checkpoint:
-            config["mf"] = {"checkpoint_path": args.mf_checkpoint}
+            config["mf"] = {
+                "checkpoint_path": args.mf_checkpoint,
+                "strong_model": args.strong_model,
+                "weak_model": args.weak_model,
+            }
         if args.uniroute_checkpoint:
             config["uniroute"] = {"checkpoint_path": args.uniroute_checkpoint}
         if not config:

@@ -117,11 +117,12 @@ def train_uniroute(
 
     # 80/20 stratified split
     indices = np.arange(len(df))
+    stratify = df["bfcl_split"].values if "bfcl_split" in df.columns else None
     try:
         cl_idx, val_idx = train_test_split(
             indices,
             train_size=train_ratio,
-            stratify=df["bfcl_split"].values,
+            stratify=stratify,
             random_state=seed,
         )
     except ValueError:
