@@ -149,10 +149,22 @@ def load_bfcl_answers_by_id() -> dict:
     정답 형식:
       [{"func_name": {"param": [acceptable_values], ...}}]
 
-    irrelevance / live_irrelevance / live_relevance 등 정답 파일이 없는 split은 skip.
+    다음 split은 answer 파일이 없는 것이 정상 (pass/fail이 tool call 유무로만 판단):
+      irrelevance     → tool call 없으면 pass (함수가 요청에 무관한 상황)
+      live_irrelevance → tool call 없으면 pass
+      live_relevance  → tool call 있으면 pass (구체적 정답 없이 호출 여부만 평가)
     """
+    # answer 파일이 없는 것이 설계상 정상인 split
+    NO_ANSWER_FILE_SPLITS = {
+        "BFCL_v4_irrelevance",
+        "BFCL_v4_live_irrelevance",
+        "BFCL_v4_live_relevance",
+    }
+
     id_to_answer = {}
     for split in BFCL_SPLITS:
+        if split in NO_ANSWER_FILE_SPLITS:
+            continue  # pass/fail은 is_pass()에서 tool call 유무로 판단
         try:
             samples = _fetch_json(f"{GORILLA_ANSWER_BASE}/{split}.json")
         except Exception as e:
