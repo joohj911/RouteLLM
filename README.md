@@ -91,6 +91,21 @@ Options:
 
 Output: `eval_results.json` — per-sample pass/fail for each model.
 
+The script prints a summary at the end:
+
+```
+============================================================
+BFCL Evaluation Summary
+============================================================
+  Total samples :  1234
+      Qwen/Qwen3.5-0.8B :  612/1234  (49.6%)
+        Qwen/Qwen3.5-2B :  768/1234  (62.2%)
+        Qwen/Qwen3.5-9B : 1003/1234  (81.3%)
+============================================================
+```
+
+> **Note:** The script prints the full HuggingFace model IDs used in the next step, e.g. `--weak-model Qwen/Qwen3.5-2B --strong-model Qwen/Qwen3.5-9B`.
+
 ### Step 3: Convert to Train/Test Splits
 
 Run once per model pair, writing to separate directories:
