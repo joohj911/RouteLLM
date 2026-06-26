@@ -430,10 +430,7 @@ def auto_batch_size(
     if per_sample <= 0:
         batch = 1
     else:
-        # Cap at 64: calibration samples (first 2 BFCL items) are often shorter
-        # than typical samples that include full tool schemas, so per_sample is
-        # underestimated. 64 is a safe upper bound for long tool-call prompts.
-        batch = max(1, min(1 + int(available / per_sample), 64))
+        batch = max(1, min(1 + int(available / per_sample), 128))
 
     gb, mb = 1024 ** 3, 1024 ** 2
     gpu_label = f"{len(gpu_indices)}×GPU" if len(gpu_indices) > 1 else f"GPU:{gpu_indices[0]}"
@@ -478,16 +475,30 @@ def evaluate_model(
 
     # batch_size=0 → GPU 메모리 기반 자동 탐지
     if batch_size == 0:
-        calib_texts = []
-        for pm in valid[:2]:
+        # 전체 데이터에서 function이 있는 샘플들을 렌더링해 가장 긴 2개를 calibration에 사용.
+        # 첫 2개만 쓰면 짧은 샘플(irrelevance 등)이 걸려 per_sample을 과소추정할 수 있음.
+        pool = []
+        stride = max(1, len(valid) // 20)  # 최대 ~20개 후보를 고르게 샘플링
+        for pm in valid[::stride]:
             sid = pm["id"]
             sample = id_to_sample[sid]
+            if not sample.get("function"):  # function 없는 샘플 제외
+                continue
             msgs = build_messages(sample.get("question", []))
             if msgs:
-                tools = build_tools(sample.get("function", []))
-                calib_texts.append(_apply_template(tokenizer, msgs, tools))
-            if len(calib_texts) == 2:
-                break
+                tools = build_tools(sample["function"])
+                pool.append(_apply_template(tokenizer, msgs, tools))
+        # 렌더링된 텍스트 중 가장 긴 2개 선택
+        pool.sort(key=len, reverse=True)
+        calib_texts = pool[:2]
+        if not calib_texts:  # function 있는 샘플이 없으면 첫 2개로 폴백
+            for pm in valid[:2]:
+                sid = pm["id"]
+                sample = id_to_sample[sid]
+                msgs = build_messages(sample.get("question", []))
+                if msgs:
+                    tools = build_tools(sample.get("function", []))
+                    calib_texts.append(_apply_template(tokenizer, msgs, tools))
         batch_size = auto_batch_size(model, tokenizer, calib_texts, max_new_tokens, device)
 
     pbar = tqdm(
