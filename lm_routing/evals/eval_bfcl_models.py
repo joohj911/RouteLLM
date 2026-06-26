@@ -21,7 +21,7 @@ BFCL 카테고리별 평가 기준:
 """
 
 import argparse
-import ast
+import copy
 import json
 import re
 import urllib.request
@@ -102,12 +102,6 @@ def load_model(model_name: str, device: str, load_in_4bit: bool):
     return model, tokenizer
 
 
-def unload_model(model):
-    del model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
 # ─────────────────────────────────────────────
 # BFCL 데이터 로드
 # ─────────────────────────────────────────────
@@ -140,11 +134,9 @@ def load_bfcl_by_id() -> dict:
 
 def load_bfcl_answers_by_id() -> dict:
     """
-    possible_answer/ 디렉토리에서 정답을 로드하여 {prefixed_id: ground_truth} 반환.
+    possible_answer/ 디렉토리에서 정답을 로드하여 {id: ground_truth} 반환.
 
-    answer 파일의 ID 형식 : "simple_python_0"
-    question 파일의 ID 형식: "BFCL_v4_simple_python_0"
-    → "BFCL_v4_" prefix를 추가하여 통일.
+    answer 파일의 ID 형식: "simple_python_0"  (prefix 없음 — question 파일과 동일)
 
     정답 형식:
       [{"func_name": {"param": [acceptable_values], ...}}]
@@ -154,7 +146,6 @@ def load_bfcl_answers_by_id() -> dict:
       live_irrelevance → tool call 없으면 pass
       live_relevance  → tool call 있으면 pass (구체적 정답 없이 호출 여부만 평가)
     """
-    # answer 파일이 없는 것이 설계상 정상인 split
     NO_ANSWER_FILE_SPLITS = {
         "BFCL_v4_irrelevance",
         "BFCL_v4_live_irrelevance",
@@ -164,16 +155,16 @@ def load_bfcl_answers_by_id() -> dict:
     id_to_answer = {}
     for split in BFCL_SPLITS:
         if split in NO_ANSWER_FILE_SPLITS:
-            continue  # pass/fail은 is_pass()에서 tool call 유무로 판단
+            continue
         try:
             samples = _fetch_json(f"{GORILLA_ANSWER_BASE}/{split}.json")
         except Exception as e:
             print(f"  [skip answers] {split}: {e}")
             continue
         for sample in samples:
-            raw_id = sample.get("id", "")
-            prefixed_id = raw_id if raw_id.startswith("BFCL_v4_") else f"BFCL_v4_{raw_id}"
-            id_to_answer[prefixed_id] = sample.get("ground_truth", [])
+            # Answer file IDs have no BFCL_v4_ prefix — store as-is to match question IDs
+            sample_id = sample.get("id", "")
+            id_to_answer[sample_id] = sample.get("ground_truth", [])
     print(f"Loaded answers for {len(id_to_answer)} samples.")
     return id_to_answer
 
@@ -182,16 +173,64 @@ def load_bfcl_answers_by_id() -> dict:
 # 프롬프트 포맷
 # ─────────────────────────────────────────────
 
+# BFCL uses Gorilla-style type names; map to OpenAPI/JSON Schema types for the model.
+# Source: gorilla/berkeley-function-call-leaderboard/bfcl_eval/constants/type_mappings.py
+_GORILLA_TO_OPENAPI = {
+    "integer": "integer", "number": "number", "float": "number",
+    "string": "string", "boolean": "boolean", "bool": "boolean",
+    "array": "array", "list": "array", "tuple": "array",
+    "dict": "object", "object": "object",
+    "any": "string", "byte": "integer", "short": "integer",
+    "long": "integer", "double": "number", "char": "string",
+    "ArrayList": "array", "Array": "array",
+    "HashMap": "object", "Hashtable": "object",
+    "Queue": "array", "Stack": "array",
+    "Any": "string", "String": "string", "Bigint": "integer",
+}
+
+
+def _cast_props(props: dict) -> dict:
+    """Recursively map Gorilla type names to OpenAPI types in a properties dict."""
+    result = copy.deepcopy(props)
+    for key, val in result.items():
+        if "type" not in val:
+            val["type"] = "string"
+        else:
+            val["type"] = _GORILLA_TO_OPENAPI.get(val["type"], "string")
+        if val["type"] in ("array", "object"):
+            if "properties" in val:
+                val["properties"] = _cast_props(val["properties"])
+            elif "items" in val:
+                items = val["items"]
+                items["type"] = _GORILLA_TO_OPENAPI.get(items.get("type", "string"), "string")
+                if items["type"] == "object" and "properties" in items:
+                    items["properties"] = _cast_props(items["properties"])
+    return result
+
+
 def build_tools(function_list: list) -> list:
-    """BFCL function 리스트를 OpenAI 호환 tool 형식으로 변환."""
+    """
+    BFCL function 리스트를 OpenAI 호환 tool 형식으로 변환.
+
+    공식 BFCL convert_to_tool() 로직을 재현:
+      - parameters.type "dict" → "object"  (Gorilla → OpenAPI 타입 변환)
+      - 모든 property type을 OpenAPI 타입으로 변환 (list→array, float→number 등)
+      - 함수 이름의 "." → "_"  (OpenAI 함수명 규칙: ^[a-zA-Z0-9_-]{1,64}$)
+    """
     tools = []
     for func in function_list:
+        func = copy.deepcopy(func)
+        name = re.sub(r"\.", "_", func.get("name", ""))
+        params = copy.deepcopy(func.get("parameters", {"type": "object", "properties": {}}))
+        params["type"] = "object"  # BFCL uses "dict"; OpenAI requires "object"
+        if "properties" in params:
+            params["properties"] = _cast_props(params["properties"])
         tools.append({
             "type": "function",
             "function": {
-                "name": func.get("name", ""),
+                "name": name,
                 "description": func.get("description", ""),
-                "parameters": func.get("parameters", {"type": "object", "properties": {}}),
+                "parameters": params,
             },
         })
     return tools
@@ -245,8 +284,11 @@ def run_batch_inference(
             pad_token_id=tokenizer.pad_token_id,
         )
 
+    # skip_special_tokens=False: Qwen adds <tool_call>/</tool_call> as special tokens.
+    # Skipping them strips the tags and breaks multi-call regex parsing (parallel/multiple).
+    # <|im_end|> in the output is harmless — parse_tool_calls ignores it.
     return [
-        tokenizer.decode(out[input_len:], skip_special_tokens=True)
+        tokenizer.decode(out[input_len:], skip_special_tokens=False)
         for out in output_ids
     ]
 
@@ -291,15 +333,17 @@ def parse_tool_calls(response: str) -> list[dict]:
 # 정답 비교
 # ─────────────────────────────────────────────
 
-def normalize(v) -> str:
-    return str(v).lower().strip()
+def _standardize(v) -> str:
+    """공식 BFCL string_checker와 동일: 공백·,./-_*^ 제거, 소문자, 단따옴표→쌍따옴표."""
+    s = re.sub(r"[ ,./\-_*^]", "", str(v))
+    return s.lower().replace("'", '"')
 
 
 def _val_matches(pred_val, acceptable_values: list) -> bool:
-    """예측값이 acceptable_values 중 하나와 일치하는지 확인 (문자열 + 숫자 비교)."""
-    norm_pred = normalize(pred_val)
+    """예측값이 acceptable_values 중 하나와 일치하는지 확인."""
+    norm_pred = _standardize(pred_val)
     for av in acceptable_values:
-        if normalize(av) == norm_pred:
+        if _standardize(av) == norm_pred:
             return True
         try:
             if float(pred_val) == float(av):
@@ -311,39 +355,68 @@ def _val_matches(pred_val, acceptable_values: list) -> bool:
 
 def calls_match_bfcl(predicted: dict, gt_entry: dict) -> bool:
     """
-    BFCL GT 형식으로 함수 호출 일치 확인.
+    공식 BFCL simple_function_checker 로직에 맞춘 단일 call 비교.
     gt_entry 형식: {"func_name": {"param": [acceptable_values], ...}}
+
+    - extra params (GT에 없는 파라미터) → fail
+    - optional params ("" in acceptable_values) → 생략 허용
+    - string 비교는 _standardize 적용
     """
     if not gt_entry:
         return False
     func_name = next(iter(gt_entry))
-    if normalize(predicted.get("name", "")) != normalize(func_name):
+    if _standardize(predicted.get("name", "")) != _standardize(func_name):
         return False
+
     pred_args = predicted.get("arguments", {})
-    for key, acceptable_values in gt_entry[func_name].items():
+    # Some models serialise arguments as a JSON string rather than a dict
+    if isinstance(pred_args, str):
+        try:
+            pred_args = json.loads(pred_args)
+        except json.JSONDecodeError:
+            return False
+    gt_params = gt_entry[func_name]
+
+    # Extra params: GT에 정의되지 않은 파라미터 → fail
+    for key in pred_args:
+        if key not in gt_params:
+            return False
+
+    # GT 파라미터 검사
+    for key, acceptable_values in gt_params.items():
         if key not in pred_args:
-            return False
-        if not _val_matches(pred_args[key], acceptable_values):
-            return False
+            # "" in acceptable_values → optional (생략 가능)
+            if "" not in acceptable_values:
+                return False
+        else:
+            if not _val_matches(pred_args[key], acceptable_values):
+                return False
+
     return True
 
 
 def is_pass(predicted_calls: list[dict], ground_truth: list, is_irrelevance: bool) -> bool:
     """
-    BFCL 정답과 모델 출력을 비교하여 pass/fail 반환.
+    공식 BFCL 평가 로직에 맞춘 pass/fail 판정.
 
     ground_truth 형식: [{"func_name": {"param": [acceptable_values]}}]
+
+    - simple   : len == 1 정확히 일치
+    - parallel : len 정확히 일치, 순서 무관 1:1 매칭
+    - multiple : len 정확히 일치, 순서 무관 1:1 매칭
     """
     if is_irrelevance:
         return len(predicted_calls) == 0
 
     if not ground_truth:
-        # 정답 파일 없는 split (live_relevance 등): 함수 호출이 있으면 pass로 간주
+        # live_relevance: 구체적 GT 없음, 호출이 있으면 pass
         return len(predicted_calls) > 0
 
-    if len(predicted_calls) < len(ground_truth):
+    # 공식 BFCL: 예측 call 수가 GT와 정확히 일치해야 함
+    if len(predicted_calls) != len(ground_truth):
         return False
 
+    # 순서 무관 1:1 매칭 (parallel_function_checker_no_order와 동일)
     matched = [False] * len(predicted_calls)
     for gt_entry in ground_truth:
         found = False
@@ -538,7 +611,11 @@ def evaluate_model(
             ground_truth = id_to_answer.get(sid, [])
             results[sid] = is_pass(predicted_calls, ground_truth, is_irrelevance)
 
-    unload_model(model)
+    # Explicitly release GPU memory before returning so the next model can load cleanly.
+    # del must happen in this scope — a helper function's del only removes its local ref.
+    del model, tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     n_pass = sum(results.values())
     print(f"\n{model_name}: {n_pass}/{len(results)} pass ({n_pass/max(len(results),1)*100:.1f}%)")

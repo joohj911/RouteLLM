@@ -5,7 +5,7 @@ import random
 import numpy as np
 import torch
 
-from routellm.routers.matrix_factorization.model import MFModel
+from lm_routing.routers.matrix_factorization.model import MFModel, get_embedding_model
 
 
 def no_parallel(cls):
@@ -82,8 +82,40 @@ class RandomRouter(Router):
         return random.uniform(0, 1)
 
 
+@no_parallel
+class UniRouteRouter(Router):
+    """
+    Cluster-based UniRoute router (K-Means, §5.1 of arXiv:2502.08773).
+
+    At inference: embed prompt → find nearest K-Means centroid →
+    return (Ψ_weak[k] - Ψ_strong[k] + 1) / 2 ∈ [0, 1].
+    Threshold 0.5 means "route to strong whenever it has lower cluster error".
+    """
+
+    def __init__(self, checkpoint_path: str, **kwargs):
+        import os
+        if not os.path.isfile(checkpoint_path):
+            raise ValueError(
+                f"UniRoute checkpoint not found: {checkpoint_path}\n"
+                "Train with lm_routing/routers/uniroute/train_uniroute.py first."
+            )
+        from lm_routing.routers.uniroute.model import UniRouteModel
+        self.model = UniRouteModel.load(checkpoint_path)
+        self._embed = get_embedding_model()
+
+    def calculate_strong_win_rate(self, prompt: str) -> float:
+        import numpy as np
+        emb = self._embed.encode(
+            f"query: {prompt}",
+            convert_to_tensor=False,
+            normalize_embeddings=False,
+        )
+        return self.model.predict(np.asarray(emb, dtype=np.float32))
+
+
 ROUTER_CLS = {
     "mf": MatrixFactorizationRouter,
     "random": RandomRouter,
+    "uniroute": UniRouteRouter,
 }
 NAME_TO_CLS = {v: k for k, v in ROUTER_CLS.items()}

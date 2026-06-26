@@ -5,7 +5,7 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 
-from routellm.controller import Controller
+from lm_routing.controller import Controller
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -87,7 +87,7 @@ class BFCLBenchmark(Benchmark):
         else:
             strong_win_rates = self.cache[router]
 
-        _, thresholds = pd.qcut(strong_win_rates, num_results, retbins=True)
+        _, thresholds = pd.qcut(strong_win_rates, num_results, retbins=True, duplicates="drop")
         self.all_data["strong_win_rates"] = strong_win_rates
 
         for i, threshold in enumerate(thresholds):

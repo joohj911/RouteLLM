@@ -3,9 +3,9 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "routellm"
+name = "lm_routing"
 version = "0.2.0"
-description = "A framework for training and evaluating LLM routers for tool-calling."
+description = "A framework for training and evaluating LLM routers for tool-calling (MF + UniRoute)."
 readme = "README.md"
 classifiers = ["Programming Language :: Python :: 3"]
 dependencies = [
@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-eval = ["matplotlib", "pandarallel", "psutil"]
+eval = ["matplotlib", "pandarallel", "psutil", "scikit-learn", "openpyxl"]
 # bitsandbytes is required only when using --load-in-4bit in eval_bfcl_models.py
 quant = ["bitsandbytes>=0.43.0"]
 dev = ["black", "isort", "pre-commit"]

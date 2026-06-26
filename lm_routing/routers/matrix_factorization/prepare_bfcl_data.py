@@ -250,13 +250,17 @@ def convert_results_to_split_data(
         labeled, key_fn=lambda x: x["bfcl_split"], train_ratio=train_ratio, seed=seed
     )
 
-    # train_data.json: winner + idx만 저장 (train_matrix_factorization.py 호환)
+    # train_data.json: MF 호환 필드(model_a/b, winner, idx) +
+    # UniRoute 필요 필드(bfcl_split, per-model pass/fail) 함께 저장
     train_data = [
         {
             "model_a": weak_model,
             "model_b": strong_model,
             "winner": item["_winner"],
             "idx": item["idx"],
+            "bfcl_split": item["bfcl_split"],
+            weak_model: item[weak_model],
+            strong_model: item[strong_model],
         }
         for item in train_items
     ]

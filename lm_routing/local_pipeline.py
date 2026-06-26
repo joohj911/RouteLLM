@@ -5,7 +5,7 @@ Loads both weak and strong models at startup (each on its own GPU) so the
 router can dispatch without any model-loading latency per request.
 
 Usage:
-    from routellm.local_pipeline import LocalController
+    from lm_routing.local_pipeline import LocalController
 
     controller = LocalController(
         routers=["mf"],
@@ -34,7 +34,7 @@ from typing import Any, Optional
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from routellm.controller import Controller, ModelPair
+from lm_routing.controller import Controller, ModelPair
 
 
 # ─────────────────────────────────────────────
