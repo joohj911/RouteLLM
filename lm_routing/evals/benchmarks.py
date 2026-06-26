@@ -5,7 +5,7 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 
-from routellm.controller import Controller
+from lm_routing.controller import Controller
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 

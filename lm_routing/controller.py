@@ -5,7 +5,7 @@ from typing import Optional
 import pandas as pd
 from tqdm import tqdm
 
-from routellm.routers.routers import ROUTER_CLS
+from lm_routing.routers.routers import ROUTER_CLS
 
 
 class RoutingError(Exception):

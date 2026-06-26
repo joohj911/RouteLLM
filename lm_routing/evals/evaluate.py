@@ -8,9 +8,9 @@ import psutil
 import yaml
 from pandarallel import pandarallel
 
-from routellm.controller import Controller
-from routellm.evals.benchmarks import BFCLBenchmark
-from routellm.routers.routers import ROUTER_CLS
+from lm_routing.controller import Controller
+from lm_routing.evals.benchmarks import BFCLBenchmark
+from lm_routing.routers.routers import ROUTER_CLS
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -219,19 +219,35 @@ if __name__ == "__main__":
         default=None,
         help="Shortcut: path to local .pt MF checkpoint (sets mf.checkpoint_path in config)",
     )
+    parser.add_argument(
+        "--uniroute-checkpoint",
+        type=str,
+        default=None,
+        help="Shortcut: path to local .pt UniRoute checkpoint (sets uniroute.checkpoint_path in config)",
+    )
     parser.add_argument("--num-results", type=int, default=10)
     parser.add_argument("--random-iters", type=int, default=10)
+    parser.add_argument(
+        "--output-json",
+        type=str,
+        default=None,
+        help="If set, saves all router results + weak/strong accuracy to this JSON file",
+    )
 
     args = parser.parse_args()
     print(args)
 
-    # Build config: --mf-checkpoint is a convenience shortcut for YAML config
+    # Build config from shortcut args or YAML
     if args.config:
         config = yaml.safe_load(open(args.config, "r"))
-    elif args.mf_checkpoint:
-        config = {"mf": {"checkpoint_path": args.mf_checkpoint}}
     else:
-        config = None
+        config = {}
+        if args.mf_checkpoint:
+            config["mf"] = {"checkpoint_path": args.mf_checkpoint}
+        if args.uniroute_checkpoint:
+            config["uniroute"] = {"checkpoint_path": args.uniroute_checkpoint}
+        if not config:
+            config = None
 
     pandarallel.initialize(progress_bar=True, nb_workers=args.parallel)
     controller = Controller(
@@ -307,3 +323,20 @@ if __name__ == "__main__":
 
     if args.benchmark == "bfcl":
         print_bfcl_summary(all_results, benchmark, controller.model_pair)
+
+    if args.output_json:
+        import json as _json
+        weak_acc = benchmark.get_model_accuracy(controller.model_pair.weak)
+        strong_acc = benchmark.get_model_accuracy(controller.model_pair.strong)
+        output_data = {
+            "weak_model": controller.model_pair.weak,
+            "strong_model": controller.model_pair.strong,
+            "weak_only_accuracy": round(weak_acc, 4),
+            "strong_only_accuracy": round(strong_acc, 4),
+            "results": all_results[["method", "threshold", "strong_percentage", "accuracy"]]
+            .round(4)
+            .to_dict(orient="records"),
+        }
+        with open(args.output_json, "w") as f:
+            _json.dump(output_data, f, indent=2)
+        print(f"Saved router results → {args.output_json}")
