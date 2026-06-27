@@ -725,6 +725,30 @@ if __name__ == "__main__":
         n_pass = sum(results.values())
         print(f"  {short_name:>24} : {n_pass:4d}/{n_total}  ({n_pass/max(n_total,1)*100:.1f}%)")
     print("=" * 60)
+
+    # Per-split breakdown — split별 정답률.
+    # 여러 모델이 '정확히 같은' 전체 정답률을 보이면 보통 tool call을 전혀
+    # 생성하지 못해 irrelevance/relevance 바닥값에만 깔린 경우다. split별로 쪼개면
+    # (예: irrelevance 100%, 나머지 0%) 그 증상이 즉시 드러난다.
+    from collections import defaultdict
+
+    split_of = {p["id"]: p.get("bfcl_split", "?") for p in prompts}
+    all_splits = sorted(set(split_of.values()))
+    print("\nPer-split pass rate (%):")
+    header = "  {:<32}".format("split") + "".join(
+        f"{name.split('/')[-1]:>14}" for name in all_model_results
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for split in all_splits:
+        ids_in_split = [sid for sid, s in split_of.items() if s == split]
+        n_split = len(ids_in_split)
+        row = "  {:<32}".format(f"{split} (n={n_split})")
+        for results in all_model_results.values():
+            n_pass = sum(1 for sid in ids_in_split if results.get(sid, False))
+            row += f"{n_pass / max(n_split, 1) * 100:>13.1f}%"
+        print(row)
+    print("=" * 60)
     print(f"\nSaved eval_results → {args.output_path}  ({n_total} samples)")
 
     model_shorts = list(all_model_results.keys())

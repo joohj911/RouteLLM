@@ -30,10 +30,17 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import openpyxl
-from openpyxl.drawing.image import Image as XLImage
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import Font, PatternFill, Alignment
+
+# openpyxl is optional: the pipeline is expensive (GPU hours), so if it is not
+# installed we must NOT crash at the very last step. We fall back to CSV output
+# and still produce the PNG graph.
+try:
+    import openpyxl
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Font, PatternFill, Alignment
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
 
 
 # ─────────────────────────────────────────────
@@ -190,6 +197,42 @@ def write_sheet_graph(wb, png_path: str):
 
 
 # ─────────────────────────────────────────────
+# CSV fallback (when openpyxl is unavailable)
+# ─────────────────────────────────────────────
+
+def write_csv_fallback(pair_data_list: list[dict], output_xlsx: str) -> list[str]:
+    """openpyxl이 없을 때 Excel 대신 CSV 2개로 저장한다."""
+    base = os.path.splitext(output_xlsx)[0]
+    curves_path = f"{base}_deferral_curves.csv"
+    summary_path = f"{base}_summary.csv"
+
+    curve_rows = []
+    for pdata in pair_data_list:
+        df = pdata["df"].sort_values(["method", "strong_percentage"])
+        for _, row in df.iterrows():
+            curve_rows.append({
+                "Pair": pdata["label"],
+                "Method": row["method"],
+                "Threshold": round(float(row["threshold"]), 4),
+                "Pass Rate (%)": round(float(row["accuracy"]), 2),
+                "Weak (%)": round(100.0 - float(row["strong_percentage"]), 2),
+                "Strong (%)": round(float(row["strong_percentage"]), 2),
+            })
+    pd.DataFrame(curve_rows).to_csv(curves_path, index=False)
+
+    summary_rows = [{
+        "Pair": p["label"],
+        "Weak Model": p["weak_model"],
+        "Strong Model": p["strong_model"],
+        "Weak-only (%)": round(p["weak_acc"], 2),
+        "Strong-only (%)": round(p["strong_acc"], 2),
+    } for p in pair_data_list]
+    pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
+
+    return [curves_path, summary_path]
+
+
+# ─────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────
 
@@ -211,16 +254,26 @@ def main():
     png_path = os.path.join(output_dir, "routing_curves.png")
     make_graphs(pair_data_list, png_path)
 
-    # Excel
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)  # remove default sheet
+    # Excel (or CSV fallback if openpyxl is unavailable)
+    if HAS_OPENPYXL:
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)  # remove default sheet
 
-    write_sheet1(wb, pair_data_list)
-    write_sheet2(wb, pair_data_list)
-    write_sheet_graph(wb, png_path)
+        write_sheet1(wb, pair_data_list)
+        write_sheet2(wb, pair_data_list)
+        write_sheet_graph(wb, png_path)
 
-    wb.save(args.output)
-    print(f"Saved Excel → {args.output}")
+        wb.save(args.output)
+        print(f"Saved Excel → {args.output}")
+    else:
+        csv_paths = write_csv_fallback(pair_data_list, args.output)
+        print(
+            "[warn] openpyxl is not installed — wrote CSV instead of Excel.\n"
+            "       Install it with:  pip install openpyxl   (or  pip install -e \".[eval]\")"
+        )
+        for p in csv_paths:
+            print(f"Saved CSV → {p}")
+        print(f"Graph available at → {png_path}")
 
 
 if __name__ == "__main__":
