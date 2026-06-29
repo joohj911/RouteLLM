@@ -37,6 +37,8 @@ import argparse
 import json
 import os
 import random
+import time
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -87,17 +89,33 @@ def extract_prompt(sample, split_name: str) -> str:
     return ""
 
 
-def _fetch_split(split: str) -> list[dict]:
-    """GitHub raw URL에서 BFCL split JSON을 다운로드하여 반환."""
+def _fetch_split(split: str, retries: int = 4) -> list[dict]:
+    """
+    GitHub raw URL에서 BFCL split JSON을 다운로드하여 반환.
+
+    raw.githubusercontent.com의 일시적 400/429/5xx에 대비해 지수 백오프로 재시도.
+    재시도 없이 실패하면 split 하나가 통째로 누락된다.
+    """
     url = f"{GORILLA_RAW_BASE}/{split}.json"
-    with urllib.request.urlopen(url) as resp:
-        content = resp.read().decode("utf-8")
-    try:
-        data = json.loads(content)
-        return data if isinstance(data, list) else [data]
-    except json.JSONDecodeError:
-        # JSONL: one JSON object per line
-        return [json.loads(line) for line in content.splitlines() if line.strip()]
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "lm-routing-bfcl"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read().decode("utf-8")
+            try:
+                data = json.loads(content)
+                return data if isinstance(data, list) else [data]
+            except json.JSONDecodeError:
+                # JSONL: one JSON object per line
+                return [json.loads(line) for line in content.splitlines() if line.strip()]
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                wait = 2 ** attempt  # 1, 2, 4, 8s
+                print(f"  [retry {attempt + 1}/{retries - 1}] {split} failed ({e}); waiting {wait}s")
+                time.sleep(wait)
+    raise RuntimeError(f"Failed to fetch {split} after {retries} attempts: {last_err}")
 
 
 def load_bfcl_prompts() -> list[dict]:
