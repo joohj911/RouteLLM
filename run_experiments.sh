@@ -53,6 +53,7 @@ STRONG="Qwen/Qwen3.5-9B"
 DATA_0_8B="${BFCL_DIR}_0.8B"
 DATA_2B="${BFCL_DIR}_2B"
 EVAL_RESULTS_JSON="./eval_results.json"
+EVAL_RESPONSES_JSON="./eval_responses.json"  # per-sample raw output trace
 
 # ─────────────────────────────────────────────
 # Preflight: torch / CUDA / driver sanity check
@@ -116,6 +117,7 @@ if [[ $SKIP_EVAL -eq 0 ]]; then
   python lm_routing/evals/eval_bfcl_models.py \
     --prompts-path "${BFCL_DIR}/prompts.json" \
     --output-path  "${EVAL_RESULTS_JSON}" \
+    --save-responses "${EVAL_RESPONSES_JSON}" \
     --models "${WEAK_0_8B}" "${WEAK_2B}" "${STRONG}" \
     ${LOAD_4BIT}
 else
