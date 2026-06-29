@@ -16,7 +16,7 @@ set -euo pipefail
 
 EMB_LIST="intfloat/multilingual-e5-small intfloat/multilingual-e5-large"
 EVAL_RESULTS="./eval_results.json"
-MF_LR="3e-4"; MF_WD="1e-5"; UNI_ASSIGN="auto"
+MF_LR="3e-4"; MF_WD="1e-5"; UNI_ASSIGN="hard"   # 기본 hard. soft 비교하려면 --uniroute-assignment soft|auto
 WEAK_0_8B="Qwen/Qwen3.5-0.8B"; WEAK_2B="Qwen/Qwen3.5-2B"; STRONG="Qwen/Qwen3.5-9B"
 
 while [[ $# -gt 0 ]]; do

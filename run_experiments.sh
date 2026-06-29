@@ -32,7 +32,7 @@ SKIP_EVAL=0
 NUM_RESULTS=10
 RANDOM_ITERS=10
 EMB_MODEL="intfloat/multilingual-e5-small"
-UNIROUTE_ASSIGNMENT="auto"
+UNIROUTE_ASSIGNMENT="hard"   # 기본 hard(최근접 클러스터). soft 쓰려면 --uniroute-assignment soft|auto
 MF_LR="3e-4"
 MF_WD="1e-5"
 
