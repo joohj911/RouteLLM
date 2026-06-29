@@ -97,12 +97,14 @@ METHOD_LABEL = {
 _EMB_LINESTYLES = ["-", "--", ":", "-."]
 
 
-def make_graphs(entries: list[dict], output_png: str) -> str:
+def make_graphs(entries: list[dict], output_png: str, include_random: bool = False) -> str:
     """
     pair마다 하나의 subplot. 한 subplot 안에 임베딩 × method 곡선을 겹쳐 그린다.
-    색 = method (random/mf/uniroute), 선모양 = embedding (e5-small/e5-large…).
+    색 = method, 선모양 = embedding (e5-small/e5-large…).
     weak/strong 기준선은 임베딩과 무관하므로 pair당 한 번만.
+    random은 사실상 대각선 baseline이라 기본적으로 그래프에서 제외(데이터 표엔 유지).
     """
+    methods = (["random"] if include_random else []) + ["mf", "uniroute"]
     # pair 순서 보존
     pairs = list(dict.fromkeys(e["label"] for e in entries))
     embeddings = list(dict.fromkeys(e["embedding"] for e in entries))
@@ -122,7 +124,7 @@ def make_graphs(entries: list[dict], output_png: str) -> str:
         for e in pair_entries:
             df = e["df"]
             ls = emb_ls[e["embedding"]]
-            for method in ["random", "mf", "uniroute"]:
+            for method in methods:
                 df_m = df[df["method"] == method].sort_values("strong_percentage")
                 if df_m.empty:
                     continue
@@ -279,6 +281,8 @@ def main():
         "(라벨 없으면 'default')",
     )
     parser.add_argument("--output", default="routing_results.xlsx", help="Output Excel path")
+    parser.add_argument("--graph-random", action="store_true",
+                        help="그래프에 random baseline 곡선도 포함 (기본: 제외, 데이터 표엔 유지)")
     args = parser.parse_args()
 
     entries = [load_result(path, emb) for emb, path in (_parse_entry(x) for x in args.results_jsons)]
@@ -286,7 +290,7 @@ def main():
     # PNG graph
     output_dir = str(Path(args.output).parent)
     png_path = os.path.join(output_dir, "routing_curves.png")
-    make_graphs(entries, png_path)
+    make_graphs(entries, png_path, include_random=args.graph_random)
 
     # Excel (or CSV fallback if openpyxl is unavailable)
     if HAS_OPENPYXL:
