@@ -33,6 +33,8 @@ NUM_RESULTS=10
 RANDOM_ITERS=10
 EMB_MODEL="intfloat/multilingual-e5-small"
 UNIROUTE_ASSIGNMENT="auto"
+MF_LR="3e-4"
+MF_WD="1e-5"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +48,8 @@ while [[ $# -gt 0 ]]; do
     --random-iters)   RANDOM_ITERS="$2"; shift 2 ;;
     --embedding-model) EMB_MODEL="$2"; shift 2 ;;
     --uniroute-assignment) UNIROUTE_ASSIGNMENT="$2"; shift 2 ;;
+    --mf-lr)          MF_LR="$2"; shift 2 ;;
+    --mf-weight-decay) MF_WD="$2"; shift 2 ;;
     *) echo "[error] Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -168,6 +172,8 @@ python lm_routing/routers/matrix_factorization/train_matrix_factorization.py \
   --npy-path     "${BFCL_DIR}/embeddings.npy" \
   --output-path  "${DATA_0_8B}/mf_model.pt" \
   --embedding-model "${EMB_MODEL}" \
+  --lr "${MF_LR}" \
+  --weight-decay "${MF_WD}" \
   --num-epochs 100 \
   --dim 128 \
   --batch-size 64
@@ -178,6 +184,8 @@ python lm_routing/routers/matrix_factorization/train_matrix_factorization.py \
   --npy-path     "${BFCL_DIR}/embeddings.npy" \
   --output-path  "${DATA_2B}/mf_model.pt" \
   --embedding-model "${EMB_MODEL}" \
+  --lr "${MF_LR}" \
+  --weight-decay "${MF_WD}" \
   --num-epochs 100 \
   --dim 128 \
   --batch-size 64

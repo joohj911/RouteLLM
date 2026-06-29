@@ -105,6 +105,15 @@ def val_auc(
     return deferral_auc(scores, weak_labels, strong_labels, n_bins)
 
 
+def _tau_gap(embs: np.ndarray, centroids: np.ndarray) -> float:
+    """1·2등 클러스터 거리차의 중앙값 — τ 스케일 기준(클러스터링이 바뀌어도 재계산 가능)."""
+    d = ((embs[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+    if d.shape[1] >= 2:
+        part = np.partition(d, 1, axis=1)
+        return float(np.median(part[:, 1] - part[:, 0])) + 1e-8
+    return float(np.median(d)) + 1e-8
+
+
 def tune_tau(
     val_embs: np.ndarray,
     centroids: np.ndarray,
@@ -113,22 +122,18 @@ def tune_tau(
     weak_labels: np.ndarray,
     strong_labels: np.ndarray,
 ) -> tuple[float, float]:
-    """val에서 softmax 온도 τ를 스윕하여 (best_tau, best_soft_auc) 반환."""
-    d = ((val_embs[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)  # (N, K)
-    if d.shape[1] >= 2:
-        part = np.partition(d, 1, axis=1)
-        gap = float(np.median(part[:, 1] - part[:, 0])) + 1e-8  # 1·2등 클러스터 거리차
-    else:
-        gap = float(np.median(d)) + 1e-8
-
-    best_tau, best_auc = gap, -np.inf
+    """
+    val에서 softmax 온도 τ를 스윕하여 (best_mult, best_soft_auc) 반환.
+    τ = best_mult × gap 으로 저장하면 최종 refit(다른 centroids)에서도 재계산 가능.
+    """
+    gap = _tau_gap(val_embs, centroids)
+    best_mult, best_auc = 1.0, -np.inf
     for mult in (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0):
-        tau = gap * mult
-        s = soft_scores(val_embs, centroids, psi_weak, psi_strong, tau)
+        s = soft_scores(val_embs, centroids, psi_weak, psi_strong, gap * mult)
         auc = deferral_auc(s, weak_labels, strong_labels)
         if auc > best_auc:
-            best_auc, best_tau = auc, tau
-    return best_tau, best_auc
+            best_auc, best_mult = auc, mult
+    return best_mult, best_auc
 
 
 # ─────────────────────────────────────────────
@@ -181,69 +186,77 @@ def train_uniroute(
 
     cl_embs = train_embs[cl_idx]
     val_embs = train_embs[val_idx]
+    cl_df = df.iloc[cl_idx].reset_index(drop=True)
     val_df = df.iloc[val_idx].reset_index(drop=True)
+    cl_weak = cl_df[weak_model].astype(bool).values
+    cl_strong = cl_df[strong_model].astype(bool).values
     val_weak = val_df[weak_model].astype(bool).values
     val_strong = val_df[strong_model].astype(bool).values
+    # 최종 모델용: 전체 train(cl+val) pass 라벨
+    all_weak = df[weak_model].astype(bool).values
+    all_strong = df[strong_model].astype(bool).values
 
     print(f"  cluster_train: {len(cl_idx)} samples, val: {len(val_idx)} samples")
 
-    # K candidate list: range 3 to len(val)//50, plus fixed checkpoints
-    n_val = len(val_idx)
+    # K 후보: 넓게 스윕. K는 cluster_train 크기를 넘을 수 없음.
+    n_cl = len(cl_idx)
     if k_candidates is None:
-        k_upper = max(5, n_val // 50)
-        k_candidates = sorted(set([5, 10, 13, 20, 30, k_upper]))
-    k_candidates = [k for k in k_candidates if 2 <= k <= n_val]
+        k_candidates = [3, 5, 8, 10, 13, 15, 20, 25, 30, 40, 50, 75, 100]
+        k_candidates.append(max(5, n_cl // 50))
+        k_candidates = sorted(set(k_candidates))
+    k_candidates = [k for k in k_candidates if 2 <= k <= n_cl]
     print(f"\nK candidates: {k_candidates}")
 
-    best = {"K": None, "auc": -np.inf, "centroids": None, "psi_weak": None, "psi_strong": None}
-
+    # ── K 선택: Ψ는 cluster_train에서 추정(out-of-sample), 평가는 val ──
+    best = {"K": None, "auc": -np.inf}
     for K in k_candidates:
-        km = KMeans(n_clusters=K, random_state=seed, n_init=10, max_iter=300)
-        km.fit(cl_embs)
-
+        km = KMeans(n_clusters=K, random_state=seed, n_init=10, max_iter=300).fit(cl_embs)
+        cl_labels = km.labels_
+        psi_w = compute_psi(cl_labels, cl_weak, K)      # Ψ ← cluster_train
+        psi_s = compute_psi(cl_labels, cl_strong, K)
         val_labels = km.predict(val_embs)
-        psi_w = compute_psi(val_labels, val_weak, K)
-        psi_s = compute_psi(val_labels, val_strong, K)
-        auc = val_auc(psi_w, psi_s, val_labels, val_weak, val_strong)
-
+        val_scores = hard_scores(psi_w, psi_s, val_labels)
+        auc = deferral_auc(val_scores, val_weak, val_strong)  # 평가 ← val (honest)
         print(f"  K={K:3d} → val AUC = {auc:.5f}")
-
         if auc > best["auc"]:
-            best.update({
-                "K": K,
-                "auc": auc,
-                "centroids": km.cluster_centers_.astype(np.float32),
-                "psi_weak": psi_w,
-                "psi_strong": psi_s,
-            })
+            best.update({"K": K, "auc": auc})
 
-    print(f"\nBest K={best['K']}  (hard val AUC={best['auc']:.5f})")
-    print(f"  Ψ_weak  (mean={best['psi_weak'].mean():.3f}): {best['psi_weak'].round(3)}")
-    print(f"  Ψ_strong(mean={best['psi_strong'].mean():.3f}): {best['psi_strong'].round(3)}")
+    print(f"\nBest K={best['K']}  (out-of-sample val AUC={best['auc']:.5f})")
 
-    # ── assignment 모드 결정 (hard / soft / auto) ──
-    # best K로 다시 클러스터링하여 val 라벨/centroids를 확보 (best는 K만 고름).
-    km = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(cl_embs)
-    centroids = km.cluster_centers_.astype(np.float32)
-    val_labels = km.predict(val_embs)
-    psi_w, psi_s = best["psi_weak"], best["psi_strong"]
-    hard_auc = deferral_auc(hard_scores(psi_w, psi_s, val_labels), val_weak, val_strong)
-
-    final_assignment, final_tau = "hard", 1.0
+    # ── τ 선택(soft/auto): cl-Ψ로 val에서 튜닝 (honest) ──
+    final_assignment, tau_mult = "hard", 1.0
     if assignment in ("soft", "auto"):
-        best_tau, soft_auc = tune_tau(val_embs, centroids, psi_w, psi_s, val_weak, val_strong)
-        print(f"  hard val AUC = {hard_auc:.5f}   soft val AUC = {soft_auc:.5f} (τ={best_tau:.4g})")
+        km_sel = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(cl_embs)
+        sel_centroids = km_sel.cluster_centers_.astype(np.float32)
+        psi_w_sel = compute_psi(km_sel.labels_, cl_weak, best["K"])
+        psi_s_sel = compute_psi(km_sel.labels_, cl_strong, best["K"])
+        val_labels_sel = km_sel.predict(val_embs)
+        hard_auc = deferral_auc(hard_scores(psi_w_sel, psi_s_sel, val_labels_sel), val_weak, val_strong)
+        best_mult, soft_auc = tune_tau(val_embs, sel_centroids, psi_w_sel, psi_s_sel, val_weak, val_strong)
+        print(f"  hard val AUC = {hard_auc:.5f}   soft val AUC = {soft_auc:.5f} (×{best_mult})")
         if assignment == "soft" or soft_auc > hard_auc:
-            final_assignment, final_tau = "soft", best_tau
+            final_assignment, tau_mult = "soft", best_mult
+
+    # ── 최종 모델: 전체 train(cl+val)으로 refit, Ψ도 전체에서 추정 ──
+    km_final = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(train_embs)
+    centroids = km_final.cluster_centers_.astype(np.float32)
+    all_labels = km_final.labels_
+    psi_w_final = compute_psi(all_labels, all_weak, best["K"])
+    psi_s_final = compute_psi(all_labels, all_strong, best["K"])
+    final_tau = tau_mult * _tau_gap(train_embs, centroids) if final_assignment == "soft" else 1.0
+
+    print(f"  Final Ψ on all {len(train_embs)} train samples.")
+    print(f"  Ψ_weak  (mean={psi_w_final.mean():.3f})")
+    print(f"  Ψ_strong(mean={psi_s_final.mean():.3f})")
     print(f"  → assignment = {final_assignment}" + (f" (τ={final_tau:.4g})" if final_assignment == "soft" else ""))
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "K": best["K"],
-            "centroids": best["centroids"],
-            "psi_weak": best["psi_weak"],
-            "psi_strong": best["psi_strong"],
+            "centroids": centroids,
+            "psi_weak": psi_w_final,
+            "psi_strong": psi_s_final,
             "weak_model": weak_model,
             "strong_model": strong_model,
             "val_auc": best["auc"],
@@ -255,9 +268,7 @@ def train_uniroute(
         output_path,
     )
     print(f"Saved UniRoute checkpoint → {output_path}\n")
-    best["assignment"] = final_assignment
-    best["tau"] = final_tau
-    return best
+    return {"K": best["K"], "auc": best["auc"], "assignment": final_assignment, "tau": final_tau}
 
 
 # ─────────────────────────────────────────────
