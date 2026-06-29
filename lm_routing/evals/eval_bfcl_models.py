@@ -297,24 +297,85 @@ def run_batch_inference(
 # 출력 파싱
 # ─────────────────────────────────────────────
 
+def _parse_xml_function(inner: str) -> dict | None:
+    """
+    Qwen3.5의 XML 스타일 tool call 본문을 파싱한다.
+
+        <function=NAME>
+        <parameter=PNAME>
+        VALUE
+        </parameter>
+        ...
+        </function>
+
+    → {"name": NAME, "arguments": {PNAME: VALUE, ...}}
+
+    VALUE는 JSON으로 파싱을 시도하고(list/dict/number/bool), 실패하면 문자열로 둔다.
+    """
+    fmatch = re.search(r"<function=([^>]+)>(.*?)</function>", inner, re.DOTALL)
+    if not fmatch:
+        return None
+    name = fmatch.group(1).strip()
+    body = fmatch.group(2)
+
+    args = {}
+    for pmatch in re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", body, re.DOTALL):
+        pname = pmatch.group(1).strip()
+        raw = pmatch.group(2).strip()
+        try:
+            args[pname] = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            args[pname] = raw
+    return {"name": name, "arguments": args}
+
+
 def parse_tool_calls(response: str) -> list[dict]:
     """
-    모델 응답에서 tool call JSON을 추출한다.
-    Qwen3.5 출력 형식: <tool_call>{"name": "func", "arguments": {...}}</tool_call>
+    모델 응답에서 tool call을 추출한다. 두 가지 출력 포맷을 모두 지원:
+
+      포맷 A (JSON):  <tool_call>{"name": "func", "arguments": {...}}</tool_call>
+      포맷 B (XML) :  <tool_call><function=func><parameter=p>v</parameter></function></tool_call>
+
+    Qwen3.5 small 계열은 포맷 B(XML)를 사용한다.
     """
     tool_calls = []
 
     pattern = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
     for match in pattern.finditer(response):
+        inner = match.group(1).strip()
+
+        # 포맷 A: <tool_call> 안에 JSON object/array
         try:
-            obj = json.loads(match.group(1).strip())
-            tool_calls.append(obj)
+            obj = json.loads(inner)
+            if isinstance(obj, dict):
+                tool_calls.append(obj)
+                continue
+            if isinstance(obj, list):
+                tool_calls.extend(o for o in obj if isinstance(o, dict))
+                continue
         except json.JSONDecodeError:
             pass
+
+        # 포맷 B: XML 스타일 <function=...><parameter=...>
+        xml_call = _parse_xml_function(inner)
+        if xml_call:
+            tool_calls.append(xml_call)
 
     if tool_calls:
         return tool_calls
 
+    # Fallback 1: 태그 없이 본문 전체가 XML function 블록인 경우
+    if "<function=" in response:
+        for fmatch in re.finditer(
+            r"<function=[^>]+>.*?</function>", response, re.DOTALL
+        ):
+            xml_call = _parse_xml_function(fmatch.group(0))
+            if xml_call:
+                tool_calls.append(xml_call)
+        if tool_calls:
+            return tool_calls
+
+    # Fallback 2: 태그 없이 본문 전체가 raw JSON
     stripped = response.strip()
     if stripped.startswith("[") or stripped.startswith("{"):
         try:
@@ -322,7 +383,7 @@ def parse_tool_calls(response: str) -> list[dict]:
             if isinstance(parsed, dict):
                 tool_calls = [parsed]
             elif isinstance(parsed, list):
-                tool_calls = parsed
+                tool_calls = [o for o in parsed if isinstance(o, dict)]
         except json.JSONDecodeError:
             pass
 
