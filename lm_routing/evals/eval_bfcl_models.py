@@ -621,8 +621,13 @@ def evaluate_model(
     load_in_4bit: bool,
     batch_size: int = 0,
     debug_n: int = 0,
+    trace_sink: list | None = None,
 ) -> tuple[dict[str, bool], str]:
-    """한 모델을 전체 BFCL 샘플에 대해 배치 추론으로 평가하고 {id: pass} 딕셔너리 반환."""
+    """한 모델을 전체 BFCL 샘플에 대해 배치 추론으로 평가하고 {id: pass} 딕셔너리 반환.
+
+    trace_sink가 주어지면 샘플별 추적 레코드(raw 출력, 파싱 결과, 정답, pass)를
+    append한다 (--save-responses 용).
+    """
     model, tokenizer = load_model(model_name, device, load_in_4bit)
 
     results = {}
@@ -697,12 +702,33 @@ def evaluate_model(
                     responses.append("")
                     failed_samples += 1
 
-        for sid, response, sample in zip(batch_ids, responses, batch_samples):
+        for sid, response, sample, (msgs, tools) in zip(
+            batch_ids, responses, batch_samples, batch_inputs
+        ):
             split_name = sample.get("_split", "")
             is_irrelevance = "irrelevance" in split_name
             predicted_calls = parse_tool_calls(response)
             ground_truth = id_to_answer.get(sid, [])
             results[sid] = is_pass(predicted_calls, ground_truth, is_irrelevance)
+
+            # --save-responses: 샘플별 전체 추적 레코드.
+            # "왜 이 샘플이 fail이지?"를 raw 출력까지 거슬러 확인할 수 있게 한다.
+            if trace_sink is not None:
+                user_msg = next(
+                    (m["content"] for m in reversed(msgs) if m.get("role") == "user"), ""
+                )
+                trace_sink.append({
+                    "model": model_name,
+                    "id": sid,
+                    "split": split_name,
+                    "prompt": user_msg,
+                    "offered_tools": [t["function"]["name"] for t in tools],
+                    "raw_output": response,
+                    "parsed_tool_calls": predicted_calls,
+                    "ground_truth": ground_truth,
+                    "is_irrelevance": is_irrelevance,
+                    "pass": bool(results[sid]),
+                })
 
             # --debug: 모델 raw 출력을 직접 보여줘 tool call 생성 여부를 확인.
             # 여러 모델이 정확히 같은 정답률을 보이는 경우(=irrelevance 바닥값) 원인
@@ -783,6 +809,14 @@ if __name__ == "__main__":
         help="각 모델의 처음 N개 샘플 raw 출력/파싱 결과를 출력 (0=끄기). "
         "여러 모델이 동일한 정답률을 보일 때 tool call 생성 여부 진단용.",
     )
+    parser.add_argument(
+        "--save-responses",
+        type=str,
+        default=None,
+        help="설정 시 모든 샘플의 추적 레코드(prompt, offered_tools, raw_output, "
+        "parsed_tool_calls, ground_truth, pass)를 이 JSON 경로에 저장. "
+        "'왜 fail인지' 사후 추적용.",
+    )
     args = parser.parse_args()
 
     with open(args.prompts_path) as f:
@@ -820,11 +854,12 @@ if __name__ == "__main__":
     )
 
     all_model_results = {}  # model_name → {id: bool}
+    trace_sink = [] if args.save_responses else None
 
     # 모델을 순차적으로 평가 (각 모델이 전체 GPU를 사용)
     for i, model_name in enumerate(args.models):
         print(f"\n[{i+1}/{len(args.models)}] Evaluating {model_name}")
-        results, name = evaluate_model(model_name, **eval_kwargs)
+        results, name = evaluate_model(model_name, trace_sink=trace_sink, **eval_kwargs)
         all_model_results[name] = results
 
     # eval_results.json 생성
@@ -838,6 +873,19 @@ if __name__ == "__main__":
 
     with open(args.output_path, "w") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
+
+    # --save-responses: 샘플별 추적 레코드 저장
+    if trace_sink is not None:
+        with open(args.save_responses, "w") as f:
+            json.dump(trace_sink, f, ensure_ascii=False, indent=2)
+        n_fail = sum(1 for r in trace_sink if not r["pass"])
+        print(
+            f"\nSaved {len(trace_sink)} response traces → {args.save_responses}  "
+            f"({n_fail} fail). Filter fails e.g.:\n"
+            f"  python -c \"import json; "
+            f"[print(r['id'], r['raw_output'][:120]) "
+            f"for r in json.load(open('{args.save_responses}')) if not r['pass']]\""
+        )
 
     # 최종 요약 출력
     n_total = len(output)
