@@ -28,10 +28,23 @@ Each router produces a deferral curve: x = strong model call %, y = pass rate.
 ```bash
 git clone https://github.com/joohj911/RouteLLM.git
 cd RouteLLM
+
+# 1. Install the torch build that matches your NVIDIA driver FIRST.
+#    Check your driver's max CUDA version with `nvidia-smi` (top-right).
+#    Example for CUDA 12.1 drivers:
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+  --index-url https://download.pytorch.org/whl/cu121
+
+# 2. Install the package (torch is pinned to 2.5.x so this won't upgrade it).
 pip install -e ".[eval]"
 # Optional: 4-bit quantization for low-VRAM inference
 pip install -e ".[eval,quant]"
 ```
+
+> **Why install torch first?** Newer torch wheels (2.6+) target newer CUDA
+> runtimes that older drivers don't support. The package pins
+> `torch>=2.5.1,<2.6`, but the *CUDA build* (cu121 vs cu124) is selected by the
+> `--index-url` above — so install torch explicitly before `pip install -e .`.
 
 ## Quick Start: Full Pipeline
 
