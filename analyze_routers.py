@@ -62,6 +62,22 @@ def safe_auc(y: np.ndarray, s: np.ndarray) -> float:
         return float("nan")
 
 
+def deferral_curve(scores, weak_pass, strong_pass, points=11):
+    """
+    점수 내림차순으로 상위 f 비율을 strong에 보냈을 때의 (strong%, pass_rate%) 곡선.
+    곡선의 '모양'을 봐서 strong%를 줄일 때 성능이 얼마나 빨리 꺾이는지 직접 확인한다.
+    """
+    order = np.argsort(-scores)              # 높은 점수 = strong 우선
+    sp, wp = strong_pass[order], weak_pass[order]
+    n = len(scores)
+    out = []
+    for f in np.linspace(0, 1, points):
+        k = int(round(f * n))                # 상위 k개 → strong, 나머지 → weak
+        correct = sp[:k].sum() + wp[k:].sum()
+        out.append((f * 100.0, correct / n * 100.0))
+    return out
+
+
 def analyze_one(name: str, scores: np.ndarray, df: pd.DataFrame,
                 weak_col: str, strong_col: str):
     weak_pass = df[weak_col].astype(bool).values
@@ -95,6 +111,24 @@ def analyze_one(name: str, scores: np.ndarray, df: pd.DataFrame,
         print("  ⚠️  WEAK SIGNAL: 점수가 퍼져 있어도 라우팅 예측력이 random 수준.")
     else:
         print("  ✓  점수가 분포하며 라우팅 신호 있음.")
+
+    # Deferral curve 형태: strong%를 줄일 때 pass rate가 얼마나 유지되는가
+    weak_acc = weak_pass.mean() * 100
+    strong_acc = strong_pass.mean() * 100
+    curve = deferral_curve(scores, weak_pass, strong_pass, points=11)
+    print(f"  Deferral curve (weak-only={weak_acc:.1f}%, strong-only={strong_acc:.1f}%):")
+    print(f"    {'strong%':>8} {'weak%':>7} {'pass%':>7}")
+    for strong_pct, passr in curve:
+        print(f"    {strong_pct:>7.0f}% {100 - strong_pct:>6.0f}% {passr:>6.1f}%")
+
+    # 핵심 지표: strong-only 성능을 유지하면서 weak로 보낼 수 있는 최대 비율.
+    # (strong%를 100→0으로 줄이며 pass_rate ≥ strong-only 인 가장 큰 weak%)
+    fine = deferral_curve(scores, weak_pass, strong_pass, points=101)
+    max_weak_at_full = 0.0
+    for strong_pct, passr in fine:
+        if passr >= strong_acc - 1e-9:
+            max_weak_at_full = max(max_weak_at_full, 100 - strong_pct)
+    print(f"  → 성능 손실 없이(≥strong-only) weak로 보낼 수 있는 최대 비율: {max_weak_at_full:.0f}%")
 
     print("  분포 히스토그램:")
     print(text_histogram(scores))

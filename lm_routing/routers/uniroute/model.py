@@ -39,12 +39,14 @@ class UniRouteModel:
         psi_strong: np.ndarray,
         assignment: str = "hard",
         tau: float = 1.0,
+        embedding_model: str = "intfloat/multilingual-e5-small",
     ):
         self.centroids = centroids          # (K, D)
         self.psi_weak = psi_weak            # (K,)
         self.psi_strong = psi_strong        # (K,)
         self.assignment = assignment        # "hard" (nearest centroid) | "soft" (softmax)
         self.tau = float(tau)               # softmax temperature (soft 일 때만 사용)
+        self.embedding_model = embedding_model  # 추론 인코딩에 쓸 모델 (학습과 동일)
 
     def predict(self, embedding: np.ndarray) -> float:
         """
@@ -79,4 +81,5 @@ class UniRouteModel:
             psi_strong=np.asarray(ckpt["psi_strong"], dtype=np.float32),
             assignment=ckpt.get("assignment", "hard"),
             tau=ckpt.get("tau", 1.0),
+            embedding_model=ckpt.get("embedding_model", "intfloat/multilingual-e5-small"),
         )

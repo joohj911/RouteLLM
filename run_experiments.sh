@@ -31,6 +31,8 @@ SKIP_EMBED=0
 SKIP_EVAL=0
 NUM_RESULTS=10
 RANDOM_ITERS=10
+EMB_MODEL="intfloat/multilingual-e5-small"
+UNIROUTE_ASSIGNMENT="auto"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +44,8 @@ while [[ $# -gt 0 ]]; do
     --skip-eval-models) SKIP_EVAL=1; shift ;;
     --num-results)    NUM_RESULTS="$2"; shift 2 ;;
     --random-iters)   RANDOM_ITERS="$2"; shift 2 ;;
+    --embedding-model) EMB_MODEL="$2"; shift 2 ;;
+    --uniroute-assignment) UNIROUTE_ASSIGNMENT="$2"; shift 2 ;;
     *) echo "[error] Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -96,9 +100,10 @@ echo "============================================================"
 # ─────────────────────────────────────────────
 if [[ $SKIP_EMBED -eq 0 ]]; then
   echo ""
-  echo "[Step 1/7] Generating BFCL embeddings → ${BFCL_DIR}/"
+  echo "[Step 1/7] Generating BFCL embeddings (${EMB_MODEL}) → ${BFCL_DIR}/"
   python lm_routing/routers/matrix_factorization/prepare_bfcl_data.py embed \
-    --output-dir "${BFCL_DIR}"
+    --output-dir "${BFCL_DIR}" \
+    --embedding-model "${EMB_MODEL}"
 else
   echo ""
   echo "[Step 1/7] Skipping embedding generation (--skip-embed)"
@@ -162,9 +167,9 @@ python lm_routing/routers/matrix_factorization/train_matrix_factorization.py \
   --train-data   "${DATA_0_8B}/train_data.json" \
   --npy-path     "${BFCL_DIR}/embeddings.npy" \
   --output-path  "${DATA_0_8B}/mf_model.pt" \
+  --embedding-model "${EMB_MODEL}" \
   --num-epochs 100 \
   --dim 128 \
-  --text-dim 384 \
   --batch-size 64
 
 echo "  Pair B MF → ${DATA_2B}/mf_model.pt"
@@ -172,9 +177,9 @@ python lm_routing/routers/matrix_factorization/train_matrix_factorization.py \
   --train-data   "${DATA_2B}/train_data.json" \
   --npy-path     "${BFCL_DIR}/embeddings.npy" \
   --output-path  "${DATA_2B}/mf_model.pt" \
+  --embedding-model "${EMB_MODEL}" \
   --num-epochs 100 \
   --dim 128 \
-  --text-dim 384 \
   --batch-size 64
 
 # ─────────────────────────────────────────────
@@ -189,7 +194,9 @@ python lm_routing/routers/uniroute/train_uniroute.py \
   --npy-path     "${BFCL_DIR}/embeddings.npy" \
   --output-path  "${DATA_0_8B}/uniroute_model.pt" \
   --weak-model   "${WEAK_0_8B}" \
-  --strong-model "${STRONG}"
+  --strong-model "${STRONG}" \
+  --assignment   "${UNIROUTE_ASSIGNMENT}" \
+  --embedding-model "${EMB_MODEL}"
 
 echo "  Pair B UniRoute → ${DATA_2B}/uniroute_model.pt"
 python lm_routing/routers/uniroute/train_uniroute.py \
@@ -197,7 +204,9 @@ python lm_routing/routers/uniroute/train_uniroute.py \
   --npy-path     "${BFCL_DIR}/embeddings.npy" \
   --output-path  "${DATA_2B}/uniroute_model.pt" \
   --weak-model   "${WEAK_2B}" \
-  --strong-model "${STRONG}"
+  --strong-model "${STRONG}" \
+  --assignment   "${UNIROUTE_ASSIGNMENT}" \
+  --embedding-model "${EMB_MODEL}"
 
 # ─────────────────────────────────────────────
 # Step 6: Evaluate all routers on test set

@@ -145,6 +145,7 @@ def train_uniroute(
     k_candidates: list[int] | None = None,
     seed: int = 42,
     assignment: str = "hard",
+    embedding_model: str = "intfloat/multilingual-e5-small",
 ) -> dict:
     print(f"\nLoading train data from {train_data_path}")
     df = pd.read_json(train_data_path)
@@ -248,7 +249,7 @@ def train_uniroute(
             "val_auc": best["auc"],
             "assignment": final_assignment,
             "tau": final_tau,
-            "embedding_model": "intfloat/multilingual-e5-small",
+            "embedding_model": embedding_model,
             "embedding_prefix": "query: ",
         },
         output_path,
@@ -282,6 +283,10 @@ if __name__ == "__main__":
         help="hard=최근접 클러스터(기존), soft=softmax 가중평균(연속 점수), "
         "auto=val AUC가 더 높은 쪽 자동 선택",
     )
+    parser.add_argument(
+        "--embedding-model", type=str, default="intfloat/multilingual-e5-small",
+        help="embeddings.npy를 만든 임베딩 모델. 체크포인트에 기록되어 추론 인코딩에 사용.",
+    )
     args = parser.parse_args()
 
     train_uniroute(
@@ -294,4 +299,5 @@ if __name__ == "__main__":
         k_candidates=args.k_candidates,
         seed=args.seed,
         assignment=args.assignment,
+        embedding_model=args.embedding_model,
     )

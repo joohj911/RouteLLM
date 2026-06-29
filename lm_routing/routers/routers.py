@@ -66,6 +66,7 @@ class MatrixFactorizationRouter(Router):
             num_classes=num_classes,
             use_proj=cfg.get("use_proj", use_proj),
             mlp_hidden=cfg.get("mlp_hidden", 0),
+            embedding_model=cfg.get("embedding_model", "intfloat/multilingual-e5-small"),
         )
         self.model.load_state_dict(state)
         self.model = self.model.eval().to(device)
@@ -105,7 +106,8 @@ class UniRouteRouter(Router):
             )
         from lm_routing.routers.uniroute.model import UniRouteModel
         self.model = UniRouteModel.load(checkpoint_path)
-        self._embed = get_embedding_model()
+        # 체크포인트에 기록된 임베딩 모델로 인코딩 (학습 때와 동일해야 함)
+        self._embed = get_embedding_model(self.model.embedding_model)
 
     def calculate_strong_win_rate(self, prompt: str) -> float:
         import numpy as np

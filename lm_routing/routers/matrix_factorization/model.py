@@ -4,15 +4,16 @@ from sentence_transformers import SentenceTransformer
 
 
 
-EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
-_EMBEDDING_MODEL = None
+DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
+EMBEDDING_MODEL_NAME = DEFAULT_EMBEDDING_MODEL  # 하위호환 별칭
+_EMBEDDING_MODELS = {}
 
 
-def get_embedding_model():
-    global _EMBEDDING_MODEL
-    if _EMBEDDING_MODEL is None:
-        _EMBEDDING_MODEL = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    return _EMBEDDING_MODEL
+def get_embedding_model(name: str = DEFAULT_EMBEDDING_MODEL):
+    """이름별로 SentenceTransformer를 캐시. e5-small/e5-large 등 혼용 가능."""
+    if name not in _EMBEDDING_MODELS:
+        _EMBEDDING_MODELS[name] = SentenceTransformer(name)
+    return _EMBEDDING_MODELS[name]
 
 
 def build_classifier(dim: int, num_classes: int, mlp_hidden: int = 0):
@@ -39,10 +40,13 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
         num_classes=1,
         use_proj=True,
         mlp_hidden=0,
+        embedding_model=DEFAULT_EMBEDDING_MODEL,
     ):
         super().__init__()
         self._name = "TextMF"
         self.use_proj = use_proj
+        # 추론 시 프롬프트를 인코딩할 임베딩 모델 (학습에 쓴 것과 동일해야 함)
+        self.embedding_model = embedding_model
         self.P = torch.nn.Embedding(num_models, dim)
 
         if self.use_proj:
@@ -65,8 +69,8 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
         model_embed = self.P(model_id)
         model_embed = torch.nn.functional.normalize(model_embed, p=2, dim=1)
 
-        # multilingual-e5-small uses "query: " prefix for asymmetric retrieval tasks
-        prompt_embed = get_embedding_model().encode(
+        # e5 계열은 비대칭 검색용 "query: " prefix 사용 (small/large 동일)
+        prompt_embed = get_embedding_model(self.embedding_model).encode(
             f"query: {prompt}",
             convert_to_tensor=True,
             device=str(self.get_device()),
