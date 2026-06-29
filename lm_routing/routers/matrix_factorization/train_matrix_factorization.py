@@ -93,8 +93,12 @@ class MFModel_Train(torch.nn.Module):
         model_loss_embed = self.P(model_loss)
         model_loss_embed = F.normalize(model_loss_embed, p=2, dim=1)
         prompt_embed = self.Q(prompt)
-        if not test:
-            prompt_embed = prompt_embed + torch.randn_like(prompt_embed) * alpha
+        if not test and alpha > 0:
+            # 노이즈를 각 임베딩의 크기에 비례시켜 SNR을 임베딩 스케일과 무관하게 유지.
+            # 절대값 노이즈(alpha=0.1)는 e5-small의 성분 크기(~0.05)보다 커서 프롬프트
+            # 신호를 덮어버리고 라우터를 상수 출력으로 붕괴시켰다. rms = 성분의 RMS 크기.
+            rms = prompt_embed.norm(dim=-1, keepdim=True) / (prompt_embed.shape[-1] ** 0.5)
+            prompt_embed = prompt_embed + torch.randn_like(prompt_embed) * alpha * rms
         if self.use_proj:
             prompt_embed = self.text_proj(prompt_embed)
 

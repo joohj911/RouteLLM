@@ -220,6 +220,7 @@ python -m lm_routing.evals.evaluate \
   --output            "${RESULT_0_8B}" \
   --num-results       "${NUM_RESULTS}" \
   --random-iters      "${RANDOM_ITERS}" \
+  --overwrite-cache   mf uniroute \
   --output-json       "${RESULT_0_8B}/eval_results.json"
 
 echo "  Pair B → ${RESULT_2B}/eval_results.json"
@@ -233,6 +234,7 @@ python -m lm_routing.evals.evaluate \
   --output            "${RESULT_2B}" \
   --num-results       "${NUM_RESULTS}" \
   --random-iters      "${RANDOM_ITERS}" \
+  --overwrite-cache   mf uniroute \
   --output-json       "${RESULT_2B}/eval_results.json"
 
 # ─────────────────────────────────────────────
