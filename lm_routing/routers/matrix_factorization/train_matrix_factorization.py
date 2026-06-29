@@ -272,11 +272,26 @@ if __name__ == "__main__":
     model_ids = build_model_ids(filtered_data)
     print(f"Model IDs: {model_ids}")
 
-    random.shuffle(filtered_data)
-    n_val = max(1, int(len(filtered_data) * args.val_ratio))
-    train_data = filtered_data[:-n_val]
-    val_data = filtered_data[-n_val:]
-    print(f"Train: {len(train_data)}  Val: {len(val_data)}")
+    # bfcl_split(카테고리) 기준 stratified val split — 소형 카테고리(live_parallel 등)가
+    # val에서 누락/편중되지 않도록 카테고리별 비율로 나눈다. bfcl_split 없으면 무작위 fallback.
+    from collections import defaultdict
+    rng = random.Random(42)
+    if all("bfcl_split" in s for s in filtered_data):
+        buckets = defaultdict(list)
+        for s in filtered_data:
+            buckets[s["bfcl_split"]].append(s)
+        train_data, val_data = [], []
+        for b in buckets.values():
+            rng.shuffle(b)
+            n_v = min(len(b) - 1, int(round(len(b) * args.val_ratio)))  # train에 최소 1개 보존
+            val_data.extend(b[:n_v])
+            train_data.extend(b[n_v:])
+        rng.shuffle(train_data)
+    else:
+        rng.shuffle(filtered_data)
+        n_val = max(1, int(len(filtered_data) * args.val_ratio))
+        train_data, val_data = filtered_data[:-n_val], filtered_data[-n_val:]
+    print(f"Train: {len(train_data)}  Val: {len(val_data)}  (stratified by bfcl_split)")
 
     train_loader = PairwiseDataset(train_data, model_ids).get_dataloaders(args.batch_size, shuffle=True)
     val_loader = PairwiseDataset(val_data, model_ids).get_dataloaders(1024, shuffle=False)
