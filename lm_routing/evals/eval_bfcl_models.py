@@ -24,6 +24,8 @@ import argparse
 import copy
 import json
 import re
+import time
+import urllib.error
 import urllib.request
 
 import torch
@@ -106,29 +108,57 @@ def load_model(model_name: str, device: str, load_in_4bit: bool):
 # BFCL 데이터 로드
 # ─────────────────────────────────────────────
 
-def _fetch_json(url: str) -> list[dict]:
-    """URL에서 JSON 또는 JSONL을 다운로드하여 반환."""
-    with urllib.request.urlopen(url) as resp:
-        content = resp.read().decode("utf-8")
-    try:
-        data = json.loads(content)
-        return data if isinstance(data, list) else [data]
-    except json.JSONDecodeError:
-        return [json.loads(line) for line in content.splitlines() if line.strip()]
+def _fetch_json(url: str, retries: int = 4) -> list[dict]:
+    """
+    URL에서 JSON 또는 JSONL을 다운로드하여 반환.
+
+    raw.githubusercontent.com은 일시적으로 400/429/5xx를 반환할 때가 있어
+    지수 백오프로 재시도한다. 재시도 없이 한 번 실패하면 split 하나가 통째로
+    누락되어(예: irrelevance) 평가 데이터가 조용히 오염되므로 중요하다.
+    """
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "lm-routing-bfcl"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read().decode("utf-8")
+            try:
+                data = json.loads(content)
+                return data if isinstance(data, list) else [data]
+            except json.JSONDecodeError:
+                return [json.loads(line) for line in content.splitlines() if line.strip()]
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                wait = 2 ** attempt  # 1, 2, 4, 8s
+                print(f"  [retry {attempt + 1}/{retries - 1}] {url} failed ({e}); waiting {wait}s")
+                time.sleep(wait)
+    raise RuntimeError(f"Failed to fetch {url} after {retries} attempts: {last_err}")
 
 
 def load_bfcl_by_id() -> dict:
     """모든 BFCL split을 로드하여 id → sample 딕셔너리로 반환."""
     id_to_sample = {}
+    failed_splits = []
     for split in BFCL_SPLITS:
         try:
             samples = _fetch_json(f"{GORILLA_RAW_BASE}/{split}.json")
         except Exception as e:
-            print(f"  [skip] {split}: {e}")
+            print(f"  [FAILED] {split}: {e}")
+            failed_splits.append(split)
             continue
         for sample in samples:
             id_to_sample[sample["id"]] = sample
     print(f"Loaded {len(id_to_sample)} BFCL samples total.")
+    if failed_splits:
+        # 누락된 question split은 해당 샘플 전체가 fail로 처리되어 결과를 왜곡한다.
+        # 긴 로그에 묻히지 않도록 크게 경고한다.
+        print("\n" + "!" * 60)
+        print(f"WARNING: {len(failed_splits)} split(s) failed to download after retries:")
+        for s in failed_splits:
+            print(f"    - {s}")
+        print("Their samples will be scored as FAIL. Re-run when the network recovers.")
+        print("!" * 60 + "\n")
     return id_to_sample
 
 
@@ -297,24 +327,85 @@ def run_batch_inference(
 # 출력 파싱
 # ─────────────────────────────────────────────
 
+def _parse_xml_function(inner: str) -> dict | None:
+    """
+    Qwen3.5의 XML 스타일 tool call 본문을 파싱한다.
+
+        <function=NAME>
+        <parameter=PNAME>
+        VALUE
+        </parameter>
+        ...
+        </function>
+
+    → {"name": NAME, "arguments": {PNAME: VALUE, ...}}
+
+    VALUE는 JSON으로 파싱을 시도하고(list/dict/number/bool), 실패하면 문자열로 둔다.
+    """
+    fmatch = re.search(r"<function=([^>]+)>(.*?)</function>", inner, re.DOTALL)
+    if not fmatch:
+        return None
+    name = fmatch.group(1).strip()
+    body = fmatch.group(2)
+
+    args = {}
+    for pmatch in re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", body, re.DOTALL):
+        pname = pmatch.group(1).strip()
+        raw = pmatch.group(2).strip()
+        try:
+            args[pname] = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            args[pname] = raw
+    return {"name": name, "arguments": args}
+
+
 def parse_tool_calls(response: str) -> list[dict]:
     """
-    모델 응답에서 tool call JSON을 추출한다.
-    Qwen3.5 출력 형식: <tool_call>{"name": "func", "arguments": {...}}</tool_call>
+    모델 응답에서 tool call을 추출한다. 두 가지 출력 포맷을 모두 지원:
+
+      포맷 A (JSON):  <tool_call>{"name": "func", "arguments": {...}}</tool_call>
+      포맷 B (XML) :  <tool_call><function=func><parameter=p>v</parameter></function></tool_call>
+
+    Qwen3.5 small 계열은 포맷 B(XML)를 사용한다.
     """
     tool_calls = []
 
     pattern = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
     for match in pattern.finditer(response):
+        inner = match.group(1).strip()
+
+        # 포맷 A: <tool_call> 안에 JSON object/array
         try:
-            obj = json.loads(match.group(1).strip())
-            tool_calls.append(obj)
+            obj = json.loads(inner)
+            if isinstance(obj, dict):
+                tool_calls.append(obj)
+                continue
+            if isinstance(obj, list):
+                tool_calls.extend(o for o in obj if isinstance(o, dict))
+                continue
         except json.JSONDecodeError:
             pass
+
+        # 포맷 B: XML 스타일 <function=...><parameter=...>
+        xml_call = _parse_xml_function(inner)
+        if xml_call:
+            tool_calls.append(xml_call)
 
     if tool_calls:
         return tool_calls
 
+    # Fallback 1: 태그 없이 본문 전체가 XML function 블록인 경우
+    if "<function=" in response:
+        for fmatch in re.finditer(
+            r"<function=[^>]+>.*?</function>", response, re.DOTALL
+        ):
+            xml_call = _parse_xml_function(fmatch.group(0))
+            if xml_call:
+                tool_calls.append(xml_call)
+        if tool_calls:
+            return tool_calls
+
+    # Fallback 2: 태그 없이 본문 전체가 raw JSON
     stripped = response.strip()
     if stripped.startswith("[") or stripped.startswith("{"):
         try:
@@ -322,7 +413,7 @@ def parse_tool_calls(response: str) -> list[dict]:
             if isinstance(parsed, dict):
                 tool_calls = [parsed]
             elif isinstance(parsed, list):
-                tool_calls = parsed
+                tool_calls = [o for o in parsed if isinstance(o, dict)]
         except json.JSONDecodeError:
             pass
 

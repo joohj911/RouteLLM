@@ -54,6 +54,32 @@ DATA_0_8B="${BFCL_DIR}_0.8B"
 DATA_2B="${BFCL_DIR}_2B"
 EVAL_RESULTS_JSON="./eval_results.json"
 
+# ─────────────────────────────────────────────
+# Preflight: torch / CUDA / driver sanity check
+# ─────────────────────────────────────────────
+# Catches the common failure where pip pulled a torch wheel built against a
+# CUDA runtime newer than the installed NVIDIA driver supports (torch imports
+# but torch.cuda.is_available() is False, or the version is unexpectedly new).
+python - <<'PY'
+import sys
+try:
+    import torch
+except ImportError:
+    sys.exit("[preflight] torch is not installed. Install the build matching your "
+             "driver first, e.g.:\n  pip install torch==2.5.1 "
+             "--index-url https://download.pytorch.org/whl/cu121")
+
+print(f"[preflight] torch {torch.__version__} (CUDA build: {torch.version.cuda})")
+if not torch.cuda.is_available():
+    sys.exit("[preflight] torch.cuda.is_available() is False. This usually means the "
+             "torch CUDA build does not match the NVIDIA driver.\n"
+             "  Check `nvidia-smi` for the driver's max CUDA version, then reinstall "
+             "the matching torch build, e.g. for CUDA 12.1:\n"
+             "  pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121")
+print(f"[preflight] {torch.cuda.device_count()} GPU(s) visible: "
+      f"{[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}")
+PY
+
 echo "============================================================"
 echo " RouteLLM × UniRoute Experiment Pipeline"
 echo "============================================================"
