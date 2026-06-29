@@ -62,6 +62,22 @@ def safe_auc(y: np.ndarray, s: np.ndarray) -> float:
         return float("nan")
 
 
+def deferral_curve(scores, weak_pass, strong_pass, points=11):
+    """
+    점수 내림차순으로 상위 f 비율을 strong에 보냈을 때의 (strong%, pass_rate%) 곡선.
+    곡선의 '모양'을 봐서 strong%를 줄일 때 성능이 얼마나 빨리 꺾이는지 직접 확인한다.
+    """
+    order = np.argsort(-scores)              # 높은 점수 = strong 우선
+    sp, wp = strong_pass[order], weak_pass[order]
+    n = len(scores)
+    out = []
+    for f in np.linspace(0, 1, points):
+        k = int(round(f * n))                # 상위 k개 → strong, 나머지 → weak
+        correct = sp[:k].sum() + wp[k:].sum()
+        out.append((f * 100.0, correct / n * 100.0))
+    return out
+
+
 def analyze_one(name: str, scores: np.ndarray, df: pd.DataFrame,
                 weak_col: str, strong_col: str):
     weak_pass = df[weak_col].astype(bool).values
@@ -96,6 +112,24 @@ def analyze_one(name: str, scores: np.ndarray, df: pd.DataFrame,
     else:
         print("  ✓  점수가 분포하며 라우팅 신호 있음.")
 
+    # Deferral curve 형태: strong%를 줄일 때 pass rate가 얼마나 유지되는가
+    weak_acc = weak_pass.mean() * 100
+    strong_acc = strong_pass.mean() * 100
+    curve = deferral_curve(scores, weak_pass, strong_pass, points=11)
+    print(f"  Deferral curve (weak-only={weak_acc:.1f}%, strong-only={strong_acc:.1f}%):")
+    print(f"    {'strong%':>8} {'weak%':>7} {'pass%':>7}")
+    for strong_pct, passr in curve:
+        print(f"    {strong_pct:>7.0f}% {100 - strong_pct:>6.0f}% {passr:>6.1f}%")
+
+    # 핵심 지표: strong-only 성능을 유지하면서 weak로 보낼 수 있는 최대 비율.
+    # (strong%를 100→0으로 줄이며 pass_rate ≥ strong-only 인 가장 큰 weak%)
+    fine = deferral_curve(scores, weak_pass, strong_pass, points=101)
+    max_weak_at_full = 0.0
+    for strong_pct, passr in fine:
+        if passr >= strong_acc - 1e-9:
+            max_weak_at_full = max(max_weak_at_full, 100 - strong_pct)
+    print(f"  → 성능 손실 없이(≥strong-only) weak로 보낼 수 있는 최대 비율: {max_weak_at_full:.0f}%")
+
     print("  분포 히스토그램:")
     print(text_histogram(scores))
 
@@ -107,12 +141,37 @@ def analyze_one(name: str, scores: np.ndarray, df: pd.DataFrame,
         for split, g in tmp.groupby("bfcl_split"):
             print(f"    {split:<34} mean={g['_score'].mean():.4f}  n={len(g)}")
 
+    return {
+        "name": name,
+        "std": float(scores.std()),
+        "auc_route_strong": auc_rs,
+        "auc_strong_fixes": auc_sf,
+        "max_weak_at_full": max_weak_at_full,
+        "weak_acc": weak_acc,
+        "strong_acc": strong_acc,
+    }
+
+
+def _parse_labeled(items):
+    """'label=path' 또는 'path'(라벨=basename) 리스트를 [(label, path)]로."""
+    import os
+    out = []
+    for it in items or []:
+        if "=" in it:
+            label, path = it.split("=", 1)
+        else:
+            label, path = os.path.splitext(os.path.basename(it))[0], it
+        out.append((label, path))
+    return out
+
 
 def main():
-    ap = argparse.ArgumentParser(description="라우터 점수 분포/판별력 분석")
+    ap = argparse.ArgumentParser(description="라우터 점수 분포/판별력 분석 (다중 체크포인트 비교)")
     ap.add_argument("--test-data", required=True, help="test_data.json")
-    ap.add_argument("--mf-checkpoint", default=None)
-    ap.add_argument("--uniroute-checkpoint", default=None)
+    ap.add_argument("--mf-checkpoint", nargs="+", default=None,
+                    help="MF 체크포인트. 여러 개 가능. 'label=path' 형식으로 라벨 지정 가능.")
+    ap.add_argument("--uniroute-checkpoint", nargs="+", default=None,
+                    help="UniRoute 체크포인트. 여러 개 가능. 'label=path' 형식 가능.")
     ap.add_argument("--strong-model", default="Qwen/Qwen3.5-9B")
     ap.add_argument("--weak-model", default="Qwen/Qwen3.5-2B")
     ap.add_argument("--text-dim", type=int, default=384)
@@ -133,31 +192,45 @@ def main():
     if not _HAS_SKLEARN:
         print("  [warn] scikit-learn 없음 → AUC는 NaN으로 표시됩니다.")
 
+    summaries = []
     score_cols = {}
 
-    if args.mf_checkpoint:
+    for label, path in _parse_labeled(args.mf_checkpoint):
         from lm_routing.routers.routers import MatrixFactorizationRouter
-        print(f"\nLoading MF router: {args.mf_checkpoint}")
+        print(f"\nLoading MF router [{label}]: {path}")
         mf = MatrixFactorizationRouter(
-            checkpoint_path=args.mf_checkpoint,
+            checkpoint_path=path,
             strong_model=args.strong_model,
             weak_model=args.weak_model,
             text_dim=args.text_dim,
         )
         s = score_all(mf, prompts)
-        score_cols["mf"] = s
-        analyze_one("MF Router", s, df, args.weak_model, args.strong_model)
+        score_cols[f"mf:{label}"] = s
+        summaries.append(analyze_one(f"MF [{label}]", s, df, args.weak_model, args.strong_model))
 
-    if args.uniroute_checkpoint:
+    for label, path in _parse_labeled(args.uniroute_checkpoint):
         from lm_routing.routers.routers import UniRouteRouter
-        print(f"\nLoading UniRoute router: {args.uniroute_checkpoint}")
-        uni = UniRouteRouter(checkpoint_path=args.uniroute_checkpoint)
+        print(f"\nLoading UniRoute router [{label}]: {path}")
+        uni = UniRouteRouter(checkpoint_path=path)
         s = score_all(uni, prompts)
-        score_cols["uniroute"] = s
-        analyze_one("UniRoute Router", s, df, args.weak_model, args.strong_model)
+        score_cols[f"uniroute:{label}"] = s
+        summaries.append(analyze_one(f"UniRoute [{label}]", s, df, args.weak_model, args.strong_model))
 
-    if not score_cols:
+    if not summaries:
         raise SystemExit("--mf-checkpoint 또는 --uniroute-checkpoint 중 하나는 필요합니다.")
+
+    # ── 비교 요약 표 ──
+    print("\n" + "=" * 78)
+    print("COMPARISON  (weak-only={:.1f}%  strong-only={:.1f}%)".format(
+        summaries[0]["weak_acc"], summaries[0]["strong_acc"]))
+    print("=" * 78)
+    print(f"  {'router':<26} {'std':>7} {'AUC(rt-str)':>12} {'AUC(fix)':>9} {'maxWeak@full':>13}")
+    print("  " + "-" * 70)
+    for r in sorted(summaries, key=lambda x: (x["max_weak_at_full"], x["auc_route_strong"]), reverse=True):
+        print(f"  {r['name']:<26} {r['std']:>7.3f} {r['auc_route_strong']:>12.4f} "
+              f"{r['auc_strong_fixes']:>9.4f} {r['max_weak_at_full']:>12.0f}%")
+    print("=" * 78)
+    print("  maxWeak@full = 성능 손실 없이(≥strong-only) weak로 보낼 수 있는 최대 비율 (클수록 좋음)")
 
     if args.save_scores:
         out = df[["id", "bfcl_split"]].copy() if "id" in df.columns else pd.DataFrame()

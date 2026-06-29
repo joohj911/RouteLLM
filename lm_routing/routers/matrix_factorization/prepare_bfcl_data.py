@@ -155,12 +155,13 @@ def load_bfcl_prompts() -> list[dict]:
     return prompts
 
 
-def generate_embeddings(prompts: list[dict], output_dir: str):
-    """multilingual-e5-small로 임베딩 생성 후 .npy와 prompts.json 저장."""
+def generate_embeddings(prompts: list[dict], output_dir: str,
+                        embedding_model: str = "intfloat/multilingual-e5-small"):
+    """지정한 e5 모델로 임베딩 생성 후 .npy와 prompts.json 저장."""
     os.makedirs(output_dir, exist_ok=True)
 
-    print("\nLoading intfloat/multilingual-e5-small ...")
-    model = SentenceTransformer("intfloat/multilingual-e5-small")
+    print(f"\nLoading {embedding_model} ...")
+    model = SentenceTransformer(embedding_model)
 
     texts = [f"query: {p['prompt']}" for p in prompts]
     print(f"Encoding {len(texts)} prompts ...")
@@ -328,6 +329,11 @@ if __name__ == "__main__":
     # Step 1: embed
     embed_parser = subparsers.add_parser("embed", help="BFCL 프롬프트 임베딩 생성")
     embed_parser.add_argument("--output-dir", type=str, default="./bfcl_data")
+    embed_parser.add_argument(
+        "--embedding-model", type=str, default="intfloat/multilingual-e5-small",
+        help="e5-small(384d) 또는 intfloat/multilingual-e5-large(1024d) 등. "
+        "여기서 쓴 모델을 train_matrix_factorization/train_uniroute의 --embedding-model에도 동일하게 지정.",
+    )
 
     # Step 2: convert (train/test split 포함)
     convert_parser = subparsers.add_parser(
@@ -352,7 +358,7 @@ if __name__ == "__main__":
         print("Loading BFCL splits ...")
         prompts = load_bfcl_prompts()
         print(f"\nTotal unique prompts: {len(prompts)}")
-        generate_embeddings(prompts, args.output_dir)
+        generate_embeddings(prompts, args.output_dir, args.embedding_model)
 
     elif args.command == "convert":
         convert_results_to_split_data(

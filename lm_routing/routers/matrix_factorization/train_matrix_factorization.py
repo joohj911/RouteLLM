@@ -230,7 +230,13 @@ if __name__ == "__main__":
         help="Where to save the trained model checkpoint"
     )
     parser.add_argument("--dim", type=int, default=128)
-    parser.add_argument("--text-dim", type=int, default=384)
+    parser.add_argument("--text-dim", type=int, default=0,
+                        help="0=embeddings.npy 차원에서 자동 추론(권장). e5-small=384, e5-large=1024")
+    parser.add_argument(
+        "--embedding-model", type=str, default="intfloat/multilingual-e5-small",
+        help="추론 시 사용할 임베딩 모델. embeddings.npy를 만든 모델과 동일해야 함. "
+        "체크포인트에 기록되어 라우터가 같은 모델로 인코딩한다.",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -245,6 +251,15 @@ if __name__ == "__main__":
     parser.add_argument("--val-ratio", type=float, default=0.05,
                         help="Fraction of train_data to use as internal validation set")
     args = parser.parse_args()
+
+    # text_dim을 npy 차원에서 자동 추론 (e5-small=384, e5-large=1024).
+    # 임베딩 모델을 바꿔도 차원 불일치 footgun 없이 동작.
+    npy_dim = int(np.load(args.npy_path, mmap_mode="r").shape[1])
+    if args.text_dim and args.text_dim != npy_dim:
+        print(f"[warn] --text-dim {args.text_dim} != embeddings.npy 차원 {npy_dim}; "
+              f"npy 차원({npy_dim}) 사용.")
+    text_dim = npy_dim
+    print(f"Embedding: {args.embedding_model}  (text_dim={text_dim})")
 
     data = json.load(open(args.train_data))
     filtered_data = [
@@ -269,7 +284,7 @@ if __name__ == "__main__":
     model = MFModel_Train(
         dim=args.dim,
         num_models=len(model_ids),
-        text_dim=args.text_dim,
+        text_dim=text_dim,
         use_proj=not args.no_proj,
         npy_path=args.npy_path,
         mlp_hidden=args.mlp_hidden,
@@ -299,9 +314,10 @@ if __name__ == "__main__":
             "model_ids": model_ids,
             "config": {
                 "dim": args.dim,
-                "text_dim": args.text_dim,
+                "text_dim": text_dim,
                 "use_proj": not args.no_proj,
                 "mlp_hidden": args.mlp_hidden,
+                "embedding_model": args.embedding_model,
             },
         },
         args.output_path,
