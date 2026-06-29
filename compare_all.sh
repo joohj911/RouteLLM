@@ -89,6 +89,22 @@ compare_pair() {
 compare_pair "0.8B" "${WEAK_0_8B}"
 compare_pair "2B"   "${WEAK_2B}"
 
+# ── 합본 엑셀/그래프: 임베딩들을 같은 페이지/그래프에 겹쳐서 ──
 echo ""
-echo "Done. pair별 COMPARISON 표에서 small vs large, MF vs UniRoute 를 비교하세요."
-echo "(maxWeak@full = 성능 손실 없이 weak로 보낼 수 있는 최대 비율)"
+echo "############################################################"
+echo "# Combined Excel + overlaid line graphs (all embeddings)"
+echo "############################################################"
+COLLECT_ARGS=()
+for TAG in "${TAGS[@]}"; do
+  COLLECT_ARGS+=("${TAG}=./results_${TAG}/pair_0.8B/eval_results.json")
+  COLLECT_ARGS+=("${TAG}=./results_${TAG}/pair_2B/eval_results.json")
+done
+python collect_results.py \
+  --results-jsons "${COLLECT_ARGS[@]}" \
+  --output routing_results_combined.xlsx
+
+echo ""
+echo "Done."
+echo "  합본 엑셀 : routing_results_combined.xlsx  (Deferral Curves 시트에 Embedding 컬럼)"
+echo "  합본 그래프: routing_curves.png            (pair별 subplot, 임베딩별 선모양으로 겹침)"
+echo "  pair별 COMPARISON 표에서 maxWeak@full(성능 손실 없이 weak 보낼 수 있는 최대 비율)도 확인."

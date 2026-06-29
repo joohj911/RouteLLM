@@ -47,7 +47,7 @@ except ImportError:
 # Load
 # ─────────────────────────────────────────────
 
-def load_result(json_path: str) -> dict:
+def load_result(json_path: str, embedding: str = "default") -> dict:
     with open(json_path) as f:
         data = json.load(f)
     weak = data["weak_model"].split("/")[-1]   # "Qwen3.5-2B"
@@ -55,16 +55,26 @@ def load_result(json_path: str) -> dict:
     label = f"{weak} vs {strong}"
     df = pd.DataFrame(data["results"])
     df["pair"] = label
+    df["embedding"] = embedding
     df["weak_model"] = data["weak_model"]
     df["strong_model"] = data["strong_model"]
     return {
         "label": label,
+        "embedding": embedding,
         "weak_acc": data["weak_only_accuracy"],
         "strong_acc": data["strong_only_accuracy"],
         "weak_model": data["weak_model"],
         "strong_model": data["strong_model"],
         "df": df,
     }
+
+
+def _parse_entry(entry: str) -> tuple[str, str]:
+    """'embedding=path' → (embedding, path). '=' 없으면 (default, path)."""
+    if "=" in entry:
+        emb, path = entry.split("=", 1)
+        return emb, path
+    return "default", entry
 
 
 # ─────────────────────────────────────────────
@@ -83,44 +93,62 @@ METHOD_LABEL = {
 }
 
 
-def make_graphs(pair_data_list: list[dict], output_png: str) -> str:
-    n = len(pair_data_list)
+# 임베딩별 선 스타일 (색=method, 선모양=embedding)
+_EMB_LINESTYLES = ["-", "--", ":", "-."]
+
+
+def make_graphs(entries: list[dict], output_png: str) -> str:
+    """
+    pair마다 하나의 subplot. 한 subplot 안에 임베딩 × method 곡선을 겹쳐 그린다.
+    색 = method (random/mf/uniroute), 선모양 = embedding (e5-small/e5-large…).
+    weak/strong 기준선은 임베딩과 무관하므로 pair당 한 번만.
+    """
+    # pair 순서 보존
+    pairs = list(dict.fromkeys(e["label"] for e in entries))
+    embeddings = list(dict.fromkeys(e["embedding"] for e in entries))
+    emb_ls = {emb: _EMB_LINESTYLES[i % len(_EMB_LINESTYLES)] for i, emb in enumerate(embeddings)}
+    multi_emb = len(embeddings) > 1
+
+    n = len(pairs)
     fig, axes = plt.subplots(1, n, figsize=(7 * n, 5.5), sharey=False)
     if n == 1:
         axes = [axes]
 
-    for ax, pdata in zip(axes, pair_data_list):
-        df = pdata["df"].copy()
-        weak_acc = pdata["weak_acc"]
-        strong_acc = pdata["strong_acc"]
+    for ax, pair in zip(axes, pairs):
+        pair_entries = [e for e in entries if e["label"] == pair]
+        weak_acc = pair_entries[0]["weak_acc"]
+        strong_acc = pair_entries[0]["strong_acc"]
 
-        # Plot each method
-        for method in ["random", "mf", "uniroute"]:
-            df_m = df[df["method"] == method].sort_values("strong_percentage")
-            if df_m.empty:
-                continue
-            style = METHOD_STYLE.get(method, {})
-            ax.plot(
-                df_m["strong_percentage"],
-                df_m["accuracy"],
-                label=METHOD_LABEL.get(method, method),
-                color=style.get("color", "black"),
-                linestyle=style.get("linestyle", "-"),
-                linewidth=style.get("linewidth", 1.5),
-                marker=style.get("marker"),
-                markersize=5,
-            )
+        for e in pair_entries:
+            df = e["df"]
+            ls = emb_ls[e["embedding"]]
+            for method in ["random", "mf", "uniroute"]:
+                df_m = df[df["method"] == method].sort_values("strong_percentage")
+                if df_m.empty:
+                    continue
+                style = METHOD_STYLE.get(method, {})
+                lbl = METHOD_LABEL.get(method, method)
+                if multi_emb:
+                    lbl = f"{lbl} · {e['embedding']}"
+                ax.plot(
+                    df_m["strong_percentage"], df_m["accuracy"],
+                    label=lbl,
+                    color=style.get("color", "black"),
+                    linestyle=ls,
+                    linewidth=style.get("linewidth", 1.8),
+                    marker=style.get("marker"),
+                    markersize=4,
+                )
 
-        # Baselines
-        ax.axhline(weak_acc, color="#555555", linestyle=":", linewidth=1.2,
+        ax.axhline(weak_acc, color="#555555", linestyle=":", linewidth=1.0,
                    label=f"Weak only ({weak_acc:.1f}%)")
-        ax.axhline(strong_acc, color="#C62828", linestyle=":", linewidth=1.2,
+        ax.axhline(strong_acc, color="#C62828", linestyle=":", linewidth=1.0,
                    label=f"Strong only ({strong_acc:.1f}%)")
 
         ax.set_xlabel("Strong Model Calls (%)", fontsize=11)
         ax.set_ylabel("Pass Rate (%)", fontsize=11)
-        ax.set_title(pdata["label"], fontsize=12, fontweight="bold")
-        ax.legend(loc="lower right", fontsize=9)
+        ax.set_title(pair, fontsize=12, fontweight="bold")
+        ax.legend(loc="lower right", fontsize=8)
         ax.grid(True, alpha=0.3)
         ax.set_xlim(-2, 102)
 
@@ -145,17 +173,18 @@ def _header_style(ws, row_idx: int, n_cols: int):
         cell.alignment = Alignment(horizontal="center")
 
 
-def write_sheet1(wb, pair_data_list: list[dict]):
+def write_sheet1(wb, entries: list[dict]):
     ws = wb.create_sheet("Deferral Curves")
-    headers = ["Pair", "Method", "Threshold", "Pass Rate (%)", "Weak (%)", "Strong (%)"]
+    headers = ["Pair", "Embedding", "Method", "Threshold", "Pass Rate (%)", "Weak (%)", "Strong (%)"]
     ws.append(headers)
     _header_style(ws, 1, len(headers))
 
-    for pdata in pair_data_list:
-        df = pdata["df"].sort_values(["method", "strong_percentage"])
+    for e in entries:
+        df = e["df"].sort_values(["method", "strong_percentage"])
         for _, row in df.iterrows():
             ws.append([
-                pdata["label"],
+                e["label"],
+                e["embedding"],
                 row["method"],
                 round(float(row["threshold"]), 4),
                 round(float(row["accuracy"]), 2),
@@ -169,19 +198,20 @@ def write_sheet1(wb, pair_data_list: list[dict]):
         ws.column_dimensions[col[0].column_letter].width = max_len + 4
 
 
-def write_sheet2(wb, pair_data_list: list[dict]):
+def write_sheet2(wb, entries: list[dict]):
     ws = wb.create_sheet("Summary")
-    headers = ["Pair", "Weak Model", "Strong Model", "Weak-only (%)", "Strong-only (%)"]
+    headers = ["Pair", "Embedding", "Weak Model", "Strong Model", "Weak-only (%)", "Strong-only (%)"]
     ws.append(headers)
     _header_style(ws, 1, len(headers))
 
-    for pdata in pair_data_list:
+    for e in entries:
         ws.append([
-            pdata["label"],
-            pdata["weak_model"],
-            pdata["strong_model"],
-            round(pdata["weak_acc"], 2),
-            round(pdata["strong_acc"], 2),
+            e["label"],
+            e["embedding"],
+            e["weak_model"],
+            e["strong_model"],
+            round(e["weak_acc"], 2),
+            round(e["strong_acc"], 2),
         ])
 
     for col in ws.columns:
@@ -200,18 +230,19 @@ def write_sheet_graph(wb, png_path: str):
 # CSV fallback (when openpyxl is unavailable)
 # ─────────────────────────────────────────────
 
-def write_csv_fallback(pair_data_list: list[dict], output_xlsx: str) -> list[str]:
+def write_csv_fallback(entries: list[dict], output_xlsx: str) -> list[str]:
     """openpyxl이 없을 때 Excel 대신 CSV 2개로 저장한다."""
     base = os.path.splitext(output_xlsx)[0]
     curves_path = f"{base}_deferral_curves.csv"
     summary_path = f"{base}_summary.csv"
 
     curve_rows = []
-    for pdata in pair_data_list:
-        df = pdata["df"].sort_values(["method", "strong_percentage"])
+    for e in entries:
+        df = e["df"].sort_values(["method", "strong_percentage"])
         for _, row in df.iterrows():
             curve_rows.append({
-                "Pair": pdata["label"],
+                "Pair": e["label"],
+                "Embedding": e["embedding"],
                 "Method": row["method"],
                 "Threshold": round(float(row["threshold"]), 4),
                 "Pass Rate (%)": round(float(row["accuracy"]), 2),
@@ -221,12 +252,13 @@ def write_csv_fallback(pair_data_list: list[dict], output_xlsx: str) -> list[str
     pd.DataFrame(curve_rows).to_csv(curves_path, index=False)
 
     summary_rows = [{
-        "Pair": p["label"],
-        "Weak Model": p["weak_model"],
-        "Strong Model": p["strong_model"],
-        "Weak-only (%)": round(p["weak_acc"], 2),
-        "Strong-only (%)": round(p["strong_acc"], 2),
-    } for p in pair_data_list]
+        "Pair": e["label"],
+        "Embedding": e["embedding"],
+        "Weak Model": e["weak_model"],
+        "Strong Model": e["strong_model"],
+        "Weak-only (%)": round(e["weak_acc"], 2),
+        "Strong-only (%)": round(e["strong_acc"], 2),
+    } for e in entries]
     pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
 
     return [curves_path, summary_path]
@@ -242,31 +274,33 @@ def main():
         "--results-jsons",
         nargs="+",
         required=True,
-        help="Paths to JSON files produced by evaluate.py --output-json (one per model pair)",
+        help="evaluate.py --output-json 결과 파일들. 임베딩 비교 시 'e5-small=path' "
+        "처럼 라벨을 붙이면 같은 그래프/시트에 임베딩별로 겹쳐 그린다. "
+        "(라벨 없으면 'default')",
     )
     parser.add_argument("--output", default="routing_results.xlsx", help="Output Excel path")
     args = parser.parse_args()
 
-    pair_data_list = [load_result(p) for p in args.results_jsons]
+    entries = [load_result(path, emb) for emb, path in (_parse_entry(x) for x in args.results_jsons)]
 
     # PNG graph
     output_dir = str(Path(args.output).parent)
     png_path = os.path.join(output_dir, "routing_curves.png")
-    make_graphs(pair_data_list, png_path)
+    make_graphs(entries, png_path)
 
     # Excel (or CSV fallback if openpyxl is unavailable)
     if HAS_OPENPYXL:
         wb = openpyxl.Workbook()
         wb.remove(wb.active)  # remove default sheet
 
-        write_sheet1(wb, pair_data_list)
-        write_sheet2(wb, pair_data_list)
+        write_sheet1(wb, entries)
+        write_sheet2(wb, entries)
         write_sheet_graph(wb, png_path)
 
         wb.save(args.output)
         print(f"Saved Excel → {args.output}")
     else:
-        csv_paths = write_csv_fallback(pair_data_list, args.output)
+        csv_paths = write_csv_fallback(entries, args.output)
         print(
             "[warn] openpyxl is not installed — wrote CSV instead of Excel.\n"
             "       Install it with:  pip install openpyxl   (or  pip install -e \".[eval]\")"
