@@ -56,12 +56,16 @@ class MatrixFactorizationRouter(Router):
         ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model_ids = ckpt["model_ids"]
         state = ckpt["state_dict"]
+        # 체크포인트에 저장된 config 우선 사용 (MLP 여부/차원). 구버전 체크포인트는
+        # config가 없으므로 생성자 인자 기본값으로 폴백.
+        cfg = ckpt.get("config", {})
         self.model = MFModel(
-            dim=hidden_size,
+            dim=cfg.get("dim", hidden_size),
             num_models=len(model_ids),
-            text_dim=text_dim,
+            text_dim=cfg.get("text_dim", text_dim),
             num_classes=num_classes,
-            use_proj=use_proj,
+            use_proj=cfg.get("use_proj", use_proj),
+            mlp_hidden=cfg.get("mlp_hidden", 0),
         )
         self.model.load_state_dict(state)
         self.model = self.model.eval().to(device)

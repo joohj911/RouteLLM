@@ -49,24 +49,13 @@ def compute_psi(cluster_labels: np.ndarray, pass_labels: np.ndarray, K: int) -> 
     return psi
 
 
-def val_auc(
-    psi_weak: np.ndarray,
-    psi_strong: np.ndarray,
-    cluster_labels: np.ndarray,
+def deferral_auc(
+    scores: np.ndarray,
     weak_labels: np.ndarray,
     strong_labels: np.ndarray,
     n_bins: int = 10,
 ) -> float:
-    """
-    Area under the deferral curve on the validation set.
-    Used internally to select the best K.
-    """
-    # Strong win rate for each val sample
-    scores = np.array([
-        (psi_weak[k] - psi_strong[k] + 1.0) / 2.0
-        for k in cluster_labels
-    ], dtype=np.float32)
-
+    """주어진 점수로 deferral curve 아래 면적을 계산 (K/τ 선택 기준)."""
     try:
         _, thresholds = pd.qcut(scores, n_bins, retbins=True, duplicates="drop")
     except ValueError:
@@ -79,9 +68,67 @@ def val_auc(
         accs.append(results.mean())
         strong_pcts.append(sel.mean())
 
-    # Sort by strong_pct ascending for trapz
     order = np.argsort(strong_pcts)
     return float(np.trapz(np.array(accs)[order], np.array(strong_pcts)[order]))
+
+
+def hard_scores(psi_weak: np.ndarray, psi_strong: np.ndarray,
+                cluster_labels: np.ndarray) -> np.ndarray:
+    """가장 가까운 클러스터 기준 strong_win_rate."""
+    psi_diff = psi_weak - psi_strong
+    return (psi_diff[cluster_labels] + 1.0) / 2.0
+
+
+def soft_scores(embs: np.ndarray, centroids: np.ndarray,
+                psi_weak: np.ndarray, psi_strong: np.ndarray, tau: float) -> np.ndarray:
+    """softmax(−dist/τ) 가중 평균 기반 연속 strong_win_rate."""
+    psi_diff = psi_weak - psi_strong                              # (K,)
+    d = ((embs[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)  # (N, K)
+    z = -d / max(tau, 1e-8)
+    z -= z.max(axis=1, keepdims=True)
+    w = np.exp(z)
+    w /= w.sum(axis=1, keepdims=True)
+    diff = w @ psi_diff                                           # (N,)
+    return (diff + 1.0) / 2.0
+
+
+def val_auc(
+    psi_weak: np.ndarray,
+    psi_strong: np.ndarray,
+    cluster_labels: np.ndarray,
+    weak_labels: np.ndarray,
+    strong_labels: np.ndarray,
+    n_bins: int = 10,
+) -> float:
+    """Hard assignment 기준 deferral AUC (K 선택용)."""
+    scores = hard_scores(psi_weak, psi_strong, cluster_labels)
+    return deferral_auc(scores, weak_labels, strong_labels, n_bins)
+
+
+def tune_tau(
+    val_embs: np.ndarray,
+    centroids: np.ndarray,
+    psi_weak: np.ndarray,
+    psi_strong: np.ndarray,
+    weak_labels: np.ndarray,
+    strong_labels: np.ndarray,
+) -> tuple[float, float]:
+    """val에서 softmax 온도 τ를 스윕하여 (best_tau, best_soft_auc) 반환."""
+    d = ((val_embs[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)  # (N, K)
+    if d.shape[1] >= 2:
+        part = np.partition(d, 1, axis=1)
+        gap = float(np.median(part[:, 1] - part[:, 0])) + 1e-8  # 1·2등 클러스터 거리차
+    else:
+        gap = float(np.median(d)) + 1e-8
+
+    best_tau, best_auc = gap, -np.inf
+    for mult in (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0):
+        tau = gap * mult
+        s = soft_scores(val_embs, centroids, psi_weak, psi_strong, tau)
+        auc = deferral_auc(s, weak_labels, strong_labels)
+        if auc > best_auc:
+            best_auc, best_tau = auc, tau
+    return best_tau, best_auc
 
 
 # ─────────────────────────────────────────────
@@ -97,6 +144,7 @@ def train_uniroute(
     train_ratio: float = 0.8,
     k_candidates: list[int] | None = None,
     seed: int = 42,
+    assignment: str = "hard",
 ) -> dict:
     print(f"\nLoading train data from {train_data_path}")
     df = pd.read_json(train_data_path)
@@ -168,9 +216,25 @@ def train_uniroute(
                 "psi_strong": psi_s,
             })
 
-    print(f"\nBest K={best['K']}  (val AUC={best['auc']:.5f})")
+    print(f"\nBest K={best['K']}  (hard val AUC={best['auc']:.5f})")
     print(f"  Ψ_weak  (mean={best['psi_weak'].mean():.3f}): {best['psi_weak'].round(3)}")
     print(f"  Ψ_strong(mean={best['psi_strong'].mean():.3f}): {best['psi_strong'].round(3)}")
+
+    # ── assignment 모드 결정 (hard / soft / auto) ──
+    # best K로 다시 클러스터링하여 val 라벨/centroids를 확보 (best는 K만 고름).
+    km = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(cl_embs)
+    centroids = km.cluster_centers_.astype(np.float32)
+    val_labels = km.predict(val_embs)
+    psi_w, psi_s = best["psi_weak"], best["psi_strong"]
+    hard_auc = deferral_auc(hard_scores(psi_w, psi_s, val_labels), val_weak, val_strong)
+
+    final_assignment, final_tau = "hard", 1.0
+    if assignment in ("soft", "auto"):
+        best_tau, soft_auc = tune_tau(val_embs, centroids, psi_w, psi_s, val_weak, val_strong)
+        print(f"  hard val AUC = {hard_auc:.5f}   soft val AUC = {soft_auc:.5f} (τ={best_tau:.4g})")
+        if assignment == "soft" or soft_auc > hard_auc:
+            final_assignment, final_tau = "soft", best_tau
+    print(f"  → assignment = {final_assignment}" + (f" (τ={final_tau:.4g})" if final_assignment == "soft" else ""))
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -182,12 +246,16 @@ def train_uniroute(
             "weak_model": weak_model,
             "strong_model": strong_model,
             "val_auc": best["auc"],
+            "assignment": final_assignment,
+            "tau": final_tau,
             "embedding_model": "intfloat/multilingual-e5-small",
             "embedding_prefix": "query: ",
         },
         output_path,
     )
     print(f"Saved UniRoute checkpoint → {output_path}\n")
+    best["assignment"] = final_assignment
+    best["tau"] = final_tau
     return best
 
 
@@ -209,6 +277,11 @@ if __name__ == "__main__":
         help="K values to try (default: auto from val size)",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--assignment", choices=["hard", "soft", "auto"], default="hard",
+        help="hard=최근접 클러스터(기존), soft=softmax 가중평균(연속 점수), "
+        "auto=val AUC가 더 높은 쪽 자동 선택",
+    )
     args = parser.parse_args()
 
     train_uniroute(
@@ -220,4 +293,5 @@ if __name__ == "__main__":
         train_ratio=args.train_ratio,
         k_candidates=args.k_candidates,
         seed=args.seed,
+        assignment=args.assignment,
     )

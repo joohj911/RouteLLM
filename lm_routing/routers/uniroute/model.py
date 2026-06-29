@@ -37,21 +37,37 @@ class UniRouteModel:
         centroids: np.ndarray,
         psi_weak: np.ndarray,
         psi_strong: np.ndarray,
+        assignment: str = "hard",
+        tau: float = 1.0,
     ):
         self.centroids = centroids          # (K, D)
         self.psi_weak = psi_weak            # (K,)
         self.psi_strong = psi_strong        # (K,)
+        self.assignment = assignment        # "hard" (nearest centroid) | "soft" (softmax)
+        self.tau = float(tau)               # softmax temperature (soft 일 때만 사용)
 
     def predict(self, embedding: np.ndarray) -> float:
         """
         Return strong_win_rate ∈ [0, 1] for a single prompt embedding.
 
+        hard: 가장 가까운 클러스터의 (Ψ_weak − Ψ_strong).
+        soft: softmax(−dist/τ) 가중 평균 → 점수가 연속값이 되어 분해능이 높아진다.
+
         Higher → more reason to route to strong model.
-        Threshold 0.5 corresponds to λ=0 (pure accuracy, ignore cost).
         """
         dists = np.sum((self.centroids - embedding) ** 2, axis=1)  # (K,)
-        k = int(np.argmin(dists))
-        diff = float(self.psi_weak[k] - self.psi_strong[k])        # ∈ [-1, 1]
+        psi_diff = self.psi_weak - self.psi_strong                 # (K,) ∈ [-1, 1]
+
+        if self.assignment == "soft":
+            z = -dists / max(self.tau, 1e-8)
+            z -= z.max()                       # 수치 안정화
+            w = np.exp(z)
+            w /= w.sum()
+            diff = float(np.dot(w, psi_diff))
+        else:
+            k = int(np.argmin(dists))
+            diff = float(psi_diff[k])
+
         return (diff + 1.0) / 2.0                                   # ∈ [0, 1]
 
     @classmethod
@@ -61,4 +77,6 @@ class UniRouteModel:
             centroids=np.asarray(ckpt["centroids"], dtype=np.float32),
             psi_weak=np.asarray(ckpt["psi_weak"], dtype=np.float32),
             psi_strong=np.asarray(ckpt["psi_strong"], dtype=np.float32),
+            assignment=ckpt.get("assignment", "hard"),
+            tau=ckpt.get("tau", 1.0),
         )

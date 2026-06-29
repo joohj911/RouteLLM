@@ -15,6 +15,21 @@ def get_embedding_model():
     return _EMBEDDING_MODEL
 
 
+def build_classifier(dim: int, num_classes: int, mlp_hidden: int = 0):
+    """
+    분류기 head 생성. mlp_hidden=0 이면 기존 선형(bias 없음), >0 이면 1-hidden MLP.
+
+    학습(MFModel_Train)과 추론(MFModel)이 동일한 빌더를 써야 state_dict 키가 일치한다.
+    """
+    if mlp_hidden and mlp_hidden > 0:
+        return torch.nn.Sequential(
+            torch.nn.Linear(dim, mlp_hidden, bias=True),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden, num_classes, bias=False),
+        )
+    return torch.nn.Sequential(torch.nn.Linear(dim, num_classes, bias=False))
+
+
 class MFModel(torch.nn.Module, PyTorchModelHubMixin):
     def __init__(
         self,
@@ -23,6 +38,7 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
         text_dim=384,
         num_classes=1,
         use_proj=True,
+        mlp_hidden=0,
     ):
         super().__init__()
         self._name = "TextMF"
@@ -38,9 +54,7 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
                 text_dim == dim
             ), f"text_dim {text_dim} must be equal to dim {dim} if not using projection"
 
-        self.classifier = torch.nn.Sequential(
-            torch.nn.Linear(dim, num_classes, bias=False)
-        )
+        self.classifier = build_classifier(dim, num_classes, mlp_hidden)
 
     def get_device(self):
         return self.P.weight.device

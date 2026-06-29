@@ -10,6 +10,8 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from lm_routing.routers.matrix_factorization.model import build_classifier
+
 torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
@@ -55,6 +57,7 @@ class MFModel_Train(torch.nn.Module):
         num_classes=1,
         use_proj=True,
         npy_path=None,
+        mlp_hidden=0,
     ):
         super().__init__()
         self.use_proj = use_proj
@@ -77,8 +80,8 @@ class MFModel_Train(torch.nn.Module):
                 text_dim == dim
             ), f"text_dim {text_dim} must be equal to dim {dim} if not using projection"
 
-        # Sequential wrapper matches MFModel's state dict keys (classifier.0.weight)
-        self.classifier = torch.nn.Sequential(nn.Linear(dim, num_classes, bias=False))
+        # 추론(MFModel)과 동일한 빌더를 사용해 state_dict 키를 일치시킨다.
+        self.classifier = build_classifier(dim, num_classes, mlp_hidden)
 
     def get_device(self):
         return self.P.weight.device
@@ -102,9 +105,12 @@ class MFModel_Train(torch.nn.Module):
         if self.use_proj:
             prompt_embed = self.text_proj(prompt_embed)
 
-        return self.classifier(
-            (model_win_embed - model_loss_embed) * prompt_embed
-        ).squeeze()
+        # per-model 점수의 차이로 계산 → 추론(sigmoid(s_win - s_loss))과 정확히 일치.
+        # 선형 classifier에선 (win-loss)*p 한 번 통과와 수학적으로 동일하고,
+        # MLP(비선형)에선 이 형태라야 추론과 일치한다.
+        s_win = self.classifier(model_win_embed * prompt_embed)
+        s_loss = self.classifier(model_loss_embed * prompt_embed)
+        return (s_win - s_loss).squeeze()
 
     @torch.no_grad()
     def predict(self, model_win, model_loss, prompt):
@@ -231,6 +237,10 @@ if __name__ == "__main__":
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--no-proj", action="store_true")
+    parser.add_argument(
+        "--mlp-hidden", type=int, default=0,
+        help="0=선형 classifier(기존), >0=해당 크기의 1-hidden MLP classifier",
+    )
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--val-ratio", type=float, default=0.05,
                         help="Fraction of train_data to use as internal validation set")
@@ -262,6 +272,7 @@ if __name__ == "__main__":
         text_dim=args.text_dim,
         use_proj=not args.no_proj,
         npy_path=args.npy_path,
+        mlp_hidden=args.mlp_hidden,
     ).to(args.device)
 
     best_acc, best_state = train_loops(
@@ -281,6 +292,19 @@ if __name__ == "__main__":
     save_state = best_state if best_state is not None else {
         k: v for k, v in model.state_dict().items() if not k.startswith("Q.")
     }
-    torch.save({"state_dict": save_state, "model_ids": model_ids}, args.output_path)
+    # config를 함께 저장 → 추론 시 라우터가 동일한 구조(MLP 여부 포함)로 로드.
+    torch.save(
+        {
+            "state_dict": save_state,
+            "model_ids": model_ids,
+            "config": {
+                "dim": args.dim,
+                "text_dim": args.text_dim,
+                "use_proj": not args.no_proj,
+                "mlp_hidden": args.mlp_hidden,
+            },
+        },
+        args.output_path,
+    )
     print(f"\nSaved model → {args.output_path}  (best_val_acc={best_acc:.4f})")
     print(f"  model_ids : {model_ids}")
