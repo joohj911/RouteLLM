@@ -529,12 +529,14 @@ def evaluate_model(
     device: str,
     load_in_4bit: bool,
     batch_size: int = 0,
+    debug_n: int = 0,
 ) -> tuple[dict[str, bool], str]:
     """한 모델을 전체 BFCL 샘플에 대해 배치 추론으로 평가하고 {id: pass} 딕셔너리 반환."""
     model, tokenizer = load_model(model_name, device, load_in_4bit)
 
     results = {}
     failed_samples = 0
+    debug_printed = 0
 
     valid = []
     for pm in prompts:
@@ -611,6 +613,19 @@ def evaluate_model(
             ground_truth = id_to_answer.get(sid, [])
             results[sid] = is_pass(predicted_calls, ground_truth, is_irrelevance)
 
+            # --debug: 모델 raw 출력을 직접 보여줘 tool call 생성 여부를 확인.
+            # 여러 모델이 정확히 같은 정답률을 보이는 경우(=irrelevance 바닥값) 원인
+            # 진단에 사용한다. batch_size=1 vs N 비교로 배치 생성 깨짐도 잡을 수 있다.
+            if debug_printed < debug_n:
+                debug_printed += 1
+                print("\n" + "─" * 70)
+                print(f"[debug] id={sid}  split={split_name}  irrelevance={is_irrelevance}")
+                print(f"[debug] raw output ({len(response)} chars):")
+                print(repr(response[:800]))
+                print(f"[debug] parsed tool calls: {predicted_calls}")
+                print(f"[debug] ground truth      : {ground_truth}")
+                print(f"[debug] → pass = {results[sid]}")
+
     # Explicitly release GPU memory before returning so the next model can load cleanly.
     # del must happen in this scope — a helper function's del only removes its local ref.
     del model, tokenizer
@@ -663,10 +678,27 @@ if __name__ == "__main__":
         default=0,
         help="배치 추론 크기. 기본값 0 = GPU 메모리(80%% 목표)에서 자동 탐지.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="처음 N개 샘플만 평가 (0=전체). 빠른 진단용. "
+        "예: --limit 10 --debug 10 --batch-size 1 로 raw 출력 확인.",
+    )
+    parser.add_argument(
+        "--debug",
+        type=int,
+        default=0,
+        help="각 모델의 처음 N개 샘플 raw 출력/파싱 결과를 출력 (0=끄기). "
+        "여러 모델이 동일한 정답률을 보일 때 tool call 생성 여부 진단용.",
+    )
     args = parser.parse_args()
 
     with open(args.prompts_path) as f:
         prompts = json.load(f)
+    if args.limit and args.limit > 0:
+        prompts = prompts[: args.limit]
+        print(f"[--limit] Evaluating only the first {len(prompts)} samples.")
     print(f"Prompts to evaluate: {len(prompts)}")
     print(f"Models to evaluate : {args.models}")
 
@@ -693,6 +725,7 @@ if __name__ == "__main__":
         device=device,
         load_in_4bit=args.load_in_4bit,
         batch_size=args.batch_size,
+        debug_n=args.debug,
     )
 
     all_model_results = {}  # model_name → {id: bool}
