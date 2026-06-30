@@ -129,12 +129,12 @@ x축: Strong Model Calls (%), y축: Pass Rate (%)
 
 | 모델 쌍 | Random | MF router | UniRoute |
 |---|---|---|---|
-| Pair A (0.8B vs 9B) | ~0% | **약 20%** | 약 19% |
-| Pair B (2B vs 9B) | ~10% | **약 10%** | 약 39% |
+| Pair A (0.8B vs 9B) | ~0% | **약 20%** | 약 11% |
+| Pair B (2B vs 9B) | ~10% | 약 10% | **약 26%** |
 
-- **Pair A**: MF router는 weak를 **약 20%**까지 사용해도 성능 하락 1% 이내(weak 20% 지점 pass 80.66%), Random은 사실상 0%
-- **Pair B**: MF router는 **약 10%**(weak 10% 지점 pass 80.8%)로 Random과 큰 차이가 없었고, UniRoute는 **약 39%**까지 사용 가능(weak 38.82% 지점 pass 80.8%)
-- 종합하면, 사전 router로 **무작위보다 분명히 나은 routing은 가능**하지만, 1% 이내라는 조건에서 MF router의 weak 사용 비율은 **약 10–20% 수준으로 낮은 편**
+- **Pair A**: MF router가 weak를 **약 20%**까지 사용해도 성능 하락 1% 이내(weak 20.03% 지점 pass 80.66%)로 가장 좋았고, UniRoute는 약 11%(weak 10.7% 지점 pass 81.21%), Random은 사실상 0%
+- **Pair B**: UniRoute가 **약 26%**까지 사용 가능(weak 26.2% 지점 pass 81.21%)으로 가장 좋았고, MF router는 약 10%(weak 10.01% 지점 pass 80.8%)로 Random(약 10%)과 큰 차이가 없었음
+- 종합하면, 사전 router로 **무작위보다 나은 routing은 가능**하지만, 1% 이내라는 조건에서 weak 사용 비율은 **약 10–26% 수준으로 낮은 편**이며, **모델 쌍·router 구조에 따라 편차**가 큼 (Pair A는 MF, Pair B는 UniRoute가 우세)
 
 ### 4.3 결과 분석
 
@@ -149,8 +149,9 @@ x축: Strong Model Calls (%), y축: Pass Rate (%)
   - BFCL 데이터 수가 충분하지 않아, router가 **weak model이 성공 가능한 safe subset을 충분히 학습**하지 못했을 가능성
   - 특히 소형 카테고리의 sample 수가 적어, weak가 잘 처리하는 영역과 그렇지 않은 영역의 경계를 세밀하게 구분하기 어려웠을 수 있음
 
-- **방법론 간 차이**
-  - Pair B에서 UniRoute가 MF보다 높은 weak 사용 비율을 보인 점은, 동일 데이터에서도 **router 구조에 따라 weak safe subset을 구분하는 정도가 다를 수 있음**을 시사
+- **방법론 간 차이 / 일관성 부족**
+  - Pair A는 MF가, Pair B는 UniRoute가 더 높은 weak 사용 비율을 보임 → **한 방법이 일관되게 우월하다고 보기 어려움**
+  - 동일 데이터에서도 **router 구조와 모델 쌍에 따라 weak safe subset을 구분하는 정도가 달라짐**을 시사
 
 - **해석 범위**
   - 본 실험은 사전 router 기반 접근의 **초안 test 성격**
