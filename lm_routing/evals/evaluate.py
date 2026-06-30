@@ -225,6 +225,12 @@ if __name__ == "__main__":
         default=None,
         help="Shortcut: path to local .pt UniRoute checkpoint (sets uniroute.checkpoint_path in config)",
     )
+    parser.add_argument(
+        "--permodel-checkpoint",
+        type=str,
+        default=None,
+        help="Shortcut: path to local .pt per-model regression router checkpoint (sets permodel.checkpoint_path in config)",
+    )
     parser.add_argument("--num-results", type=int, default=10)
     parser.add_argument("--random-iters", type=int, default=10)
     parser.add_argument(
@@ -250,6 +256,8 @@ if __name__ == "__main__":
             }
         if args.uniroute_checkpoint:
             config["uniroute"] = {"checkpoint_path": args.uniroute_checkpoint}
+        if args.permodel_checkpoint:
+            config["permodel"] = {"checkpoint_path": args.permodel_checkpoint}
         if not config:
             config = None
 

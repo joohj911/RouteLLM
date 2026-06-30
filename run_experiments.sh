@@ -216,11 +216,30 @@ python lm_routing/routers/uniroute/train_uniroute.py \
   --assignment   "${UNIROUTE_ASSIGNMENT}" \
   --embedding-model "${EMB_MODEL}"
 
+# ── Per-model regression routers (R2-style, budget-free) ──
+echo "  Pair A PerModel → ${DATA_0_8B}/permodel_model.pt"
+python lm_routing/routers/per_model/train_per_model.py \
+  --train-data   "${DATA_0_8B}/train_data.json" \
+  --npy-path     "${BFCL_DIR}/embeddings.npy" \
+  --output-path  "${DATA_0_8B}/permodel_model.pt" \
+  --weak-model   "${WEAK_0_8B}" \
+  --strong-model "${STRONG}" \
+  --embedding-model "${EMB_MODEL}"
+
+echo "  Pair B PerModel → ${DATA_2B}/permodel_model.pt"
+python lm_routing/routers/per_model/train_per_model.py \
+  --train-data   "${DATA_2B}/train_data.json" \
+  --npy-path     "${BFCL_DIR}/embeddings.npy" \
+  --output-path  "${DATA_2B}/permodel_model.pt" \
+  --weak-model   "${WEAK_2B}" \
+  --strong-model "${STRONG}" \
+  --embedding-model "${EMB_MODEL}"
+
 # ─────────────────────────────────────────────
 # Step 6: Evaluate all routers on test set
 # ─────────────────────────────────────────────
 echo ""
-echo "[Step 6/7] Evaluating routers (random / mf / uniroute)"
+echo "[Step 6/7] Evaluating routers (random / mf / uniroute / permodel)"
 
 RESULT_0_8B="${RESULTS_DIR}/pair_0.8B"
 RESULT_2B="${RESULTS_DIR}/pair_2B"
@@ -228,30 +247,32 @@ mkdir -p "${RESULT_0_8B}" "${RESULT_2B}"
 
 echo "  Pair A → ${RESULT_0_8B}/eval_results.json"
 python -m lm_routing.evals.evaluate \
-  --routers random mf uniroute \
+  --routers random mf uniroute permodel \
   --test-data         "${DATA_0_8B}/test_data.json" \
   --mf-checkpoint     "${DATA_0_8B}/mf_model.pt" \
   --uniroute-checkpoint "${DATA_0_8B}/uniroute_model.pt" \
+  --permodel-checkpoint "${DATA_0_8B}/permodel_model.pt" \
   --strong-model      "${STRONG}" \
   --weak-model        "${WEAK_0_8B}" \
   --output            "${RESULT_0_8B}" \
   --num-results       "${NUM_RESULTS}" \
   --random-iters      "${RANDOM_ITERS}" \
-  --overwrite-cache   mf uniroute \
+  --overwrite-cache   mf uniroute permodel \
   --output-json       "${RESULT_0_8B}/eval_results.json"
 
 echo "  Pair B → ${RESULT_2B}/eval_results.json"
 python -m lm_routing.evals.evaluate \
-  --routers random mf uniroute \
+  --routers random mf uniroute permodel \
   --test-data         "${DATA_2B}/test_data.json" \
   --mf-checkpoint     "${DATA_2B}/mf_model.pt" \
   --uniroute-checkpoint "${DATA_2B}/uniroute_model.pt" \
+  --permodel-checkpoint "${DATA_2B}/permodel_model.pt" \
   --strong-model      "${STRONG}" \
   --weak-model        "${WEAK_2B}" \
   --output            "${RESULT_2B}" \
   --num-results       "${NUM_RESULTS}" \
   --random-iters      "${RANDOM_ITERS}" \
-  --overwrite-cache   mf uniroute \
+  --overwrite-cache   mf uniroute permodel \
   --output-json       "${RESULT_2B}/eval_results.json"
 
 # ─────────────────────────────────────────────

@@ -13,6 +13,7 @@ Two routing methods are compared across two model pairs:
 | `random` | Random baseline — uniform routing at each threshold |
 | `mf` | Matrix Factorization router trained on pairwise pass/fail labels |
 | `uniroute` | UniRoute K-Means cluster-based router ([arXiv:2502.08773](https://arxiv.org/abs/2502.08773)) |
+| `permodel` | Per-model regression router — independent P(pass) regressors per model; routes by predicted gain P(strong)−P(weak) (R2-Router skeleton, budget-free) |
 
 **Model pairs evaluated:**
 - Pair A: `Qwen/Qwen3.5-0.8B` (weak) vs `Qwen/Qwen3.5-9B` (strong)

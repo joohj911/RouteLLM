@@ -85,11 +85,13 @@ METHOD_STYLE = {
     "random":   {"color": "#888888", "linestyle": "--", "linewidth": 1.5, "marker": None},
     "mf":       {"color": "#2196F3", "linestyle": "-",  "linewidth": 2.0, "marker": "o"},
     "uniroute": {"color": "#FF9800", "linestyle": "-",  "linewidth": 2.0, "marker": "s"},
+    "permodel": {"color": "#4CAF50", "linestyle": "-",  "linewidth": 2.0, "marker": "^"},
 }
 METHOD_LABEL = {
     "random":   "Random",
     "mf":       "MF Router",
     "uniroute": "UniRoute (K-Means)",
+    "permodel": "Per-model Regression",
 }
 
 
@@ -104,7 +106,7 @@ def make_graphs(entries: list[dict], output_png: str, include_random: bool = Fal
     weak/strong 기준선은 임베딩과 무관하므로 pair당 한 번만.
     random은 사실상 대각선 baseline이라 기본적으로 그래프에서 제외(데이터 표엔 유지).
     """
-    methods = (["random"] if include_random else []) + ["mf", "uniroute"]
+    methods = (["random"] if include_random else []) + ["mf", "uniroute", "permodel"]
     # pair 순서 보존
     pairs = list(dict.fromkeys(e["label"] for e in entries))
     embeddings = list(dict.fromkeys(e["embedding"] for e in entries))
