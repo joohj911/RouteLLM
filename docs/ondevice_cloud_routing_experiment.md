@@ -12,32 +12,21 @@
 
 ## 1. 관련 방법론 소개
 
-### 1.1 RouteLLM
+### 1.1 RouteLLM (본 실험에서 사용한 MF router)
 
-- Strong model과 weak model **두 모델 사이에서 prompt별로 어떤 모델을 쓸지** 결정하는 binary routing framework
-- 핵심 아이디어: query에 대해 **strong model이 weak model보다 나은 응답을 낼 확률** `P(strong wins | query)`을 예측하고, 이 score가 threshold 이상이면 strong, 미만이면 weak로 routing
-- Threshold 하나로 **strong 호출 비율과 응답 품질 사이의 trade-off**를 직접 제어
-- Router는 응답 텍스트가 아니라 **query만 입력**받아 동작 → 실행 전에 모델을 고르는 사전 router에 적합
-- 논문에서는 여러 router 구조(Similarity-weighted ranking, **Matrix Factorization**, BERT classifier, Causal LLM classifier)를 비교
+- Strong/weak **두 모델 사이에서 query별로 어떤 모델을 쓸지** 정하는 binary routing framework
+- query에 대해 **strong이 weak보다 나은 응답을 낼 확률** `P(strong wins | query)`을 예측하고, threshold 이상이면 strong, 미만이면 weak로 routing → **threshold로 strong 호출 비율 ↔ 품질 trade-off 제어**
+- 논문은 여러 router 구조(Similarity-weighted ranking, **Matrix Factorization**, BERT classifier, Causal LLM classifier)를 비교하며, 그중 **MF router를 성능·routing overhead 측면에서 가장 안정적인 대표 방법**으로 제시
+- **본 실험은 이 MF router를 사용**
+  - query embedding과 model embedding의 **latent interaction**을 학습해 모델별 예상 품질 score를 예측하고, **strong score − weak score**로 routing
+  - query embedding만으로 학습·추론하여 **가볍고**, 연속 score를 출력해 **threshold로 weak/strong 비율을 유연하게 조절** 가능
 
 ### 1.2 UniRoute (Universal Model Routing)
 
-- **여러 LLM 후보 pool**에서 prompt별로 cost 대비 적절한 모델을 고르는 routing framework (RouteLLM이 strong/weak 2-모델 binary인 것과 달리 다중 LLM 대상)
-- 핵심 차별점: 각 LLM을 내부 weight가 아니라 **validation prompt set에서의 정답/오답(error) 패턴 벡터**로 표현
-  - 이 표현 덕분에, 학습 때 보지 못한 **새 LLM이 추가돼도 router 재학습 없이** routing 가능 (dynamic routing)
-- 동작: prompt feature `Φ(x)`와 각 LLM의 error feature `Ψ(h)`의 interaction으로 **해당 prompt에서의 예상 error**를 추정하고, `예상 error + λ·cost`가 가장 작은 LLM을 선택 (λ로 cost-quality trade-off 제어)
-- 구현 변형 중 **cluster 기반 router**: prompt embedding을 K-means로 clustering하고, 각 LLM의 **cluster별 평균 error**를 미리 계산해 routing에 사용
-- 본 실험에서는 이 **cluster 기반 router를 strong/weak 2-모델 설정에 맞춰** 사용 → 각 cluster에서 weak·strong의 error rate를 비교해, strong이 더 유리한 prompt를 strong으로 보내는 방식
-
-### 1.3 본 실험에서 사용한 Router (MF router)
-
-- 본 실험의 **핵심 router**로 RouteLLM의 **Matrix Factorization(MF) router**를 사용
-- MF router는 **query embedding과 model embedding의 latent interaction**을 학습해 각 모델의 예상 품질 score를 예측하고, strong score와 weak score의 차이로 routing
-- MF router를 사용한 이유
-  - RouteLLM 논문에서 **성능과 routing overhead 측면에서 가장 안정적인 대표 방법**으로 제시됨
-  - Query embedding만으로 학습·추론하므로 **가볍고 사전 router로 적합**
-  - 연속적인 routing score를 출력 → **threshold 조절로 weak/strong 비율을 유연하게 제어** 가능
-- 비교를 위해 **Random routing**(무작위 baseline)과 **UniRoute(cluster 기반)**도 함께 평가
+- **여러 LLM 후보 pool**에서 query별 cost 대비 적절한 모델을 고르는 routing framework (RouteLLM의 strong/weak 2-모델과 달리 다중 LLM 대상)
+- 핵심 차별점: 각 LLM을 내부 weight가 아니라 **validation set에서의 정답/오답(error) 패턴 벡터**로 표현 → 학습 때 못 본 **새 LLM이 추가돼도 재학습 없이** routing 가능 (dynamic routing)
+- prompt feature와 LLM error feature의 interaction으로 예상 error를 추정하고, `예상 error + λ·cost`가 가장 작은 LLM을 선택
+- 본 실험에서는 그 **cluster 기반 변형**(prompt를 K-means clustering 후 LLM의 cluster별 평균 error 사용)을 **strong/weak 2-모델에 맞춰** 비교 대상으로 사용
 
 ---
 
@@ -93,7 +82,6 @@
 - **full strong model(모든 요청을 strong에 보냄)의 성능을 기준선**으로 삼고, router 적용 후 성능이 얼마나 유지되는지 확인
   - 본 실험 기준선: full strong = **81.62%**
 - **핵심 평가 포인트**: full strong 대비 성능 하락이 **1% 이내(pass rate ≥ 80.62%)**인 조건에서, weak model을 **몇 %까지 사용**할 수 있었는지
-- threshold별 모든 세부 수치를 나열하기보다, graph와 핵심 결과(1% 이내 weak 사용 비율) 중심으로 해석
 
 ---
 
