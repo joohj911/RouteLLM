@@ -38,30 +38,49 @@
 - BFCL은 query와 함께 **호출 가능한 function 정의**가 주어지고, 모델이 적절한 function call을 생성하는지를 채점하는 **function calling / tool calling 중심** 데이터
 - 각 sample은 query(question)와 function 목록으로 구성되며, 모델의 출력이 정답 function call과 일치하는지로 pass/fail 판정
 
-**BFCL 데이터 예시**
+**BFCL 데이터 예시** (후보 function이 여러 개인 `multiple` 카테고리)
 
 ```json
 {
-  "id": "simple_python_0",
+  "id": "multiple_0",
   "question": [[{"role": "user",
-    "content": "Find the area of a triangle with a base of 10 units and height of 5 units."}]],
-  "function": [{
-    "name": "calculate_triangle_area",
-    "description": "Calculate the area of a triangle given its base and height.",
-    "parameters": {
-      "type": "dict",
-      "properties": {
-        "base":   {"type": "integer", "description": "The base of the triangle."},
-        "height": {"type": "integer", "description": "The height of the triangle."},
-        "unit":   {"type": "string",  "description": "The unit of measure (defaults to 'units')."}
-      },
-      "required": ["base", "height"]
+    "content": "Can I find the dimensions and properties of a triangle, if I know its three sides are 5 units, 4 units and 3 units long?"}]],
+  "function": [
+    {
+      "name": "triangle_properties.get",
+      "description": "Retrieve the dimensions, such as area and perimeter, of a triangle if lengths of three sides are given.",
+      "parameters": {
+        "type": "dict",
+        "properties": {
+          "side1": {"type": "integer", "description": "The length of first side."},
+          "side2": {"type": "integer", "description": "The length of second side."},
+          "side3": {"type": "integer", "description": "The length of third side."},
+          "get_area": {"type": "boolean", "description": "Calculate area (default: true)."},
+          "get_perimeter": {"type": "boolean", "description": "Calculate perimeter (default: true)."},
+          "get_angles": {"type": "boolean", "description": "Calculate internal angles (default: true)."}
+        },
+        "required": ["side1", "side2", "side3"]
+      }
+    },
+    {
+      "name": "circle_properties.get",
+      "description": "Retrieve the dimensions, such as area and circumference, of a circle if radius is given.",
+      "parameters": {
+        "type": "dict",
+        "properties": {
+          "radius": {"type": "float", "description": "The length of radius."},
+          "get_area": {"type": "boolean", "description": "Calculate area (default: true)."},
+          "get_circumference": {"type": "boolean", "description": "Calculate circumference (default: true)."}
+        },
+        "required": ["radius"]
+      }
     }
-  }]
+  ]
 }
 ```
 
-- 위 예시처럼 모델은 query를 보고 **올바른 function(`calculate_triangle_area`) 선택 + argument(`base=10`, `height=5`) 추출**을 모두 정확히 수행해야 pass
+- 위 예시처럼 모델은 **여러 후보 function 중 올바른 것(`triangle_properties.get`, `circle_properties.get` 아님)을 선택**하고, **argument(`side1=5`, `side2=4`, `side3=3`)까지 정확히 추출**해야 pass
+- 즉 단순 호출이 아니라 **올바른 function 선택 + argument 추출**이 모두 맞아야 하며, 후보가 많을수록 weak model이 틀릴 여지가 커짐
 
 ### 2.2 모델 / 임베딩 / Router 설정
 
