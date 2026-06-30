@@ -129,16 +129,22 @@ x축: Strong Model Calls (%), y축: Pass Rate (%)
 
 | 모델 쌍 | Random | MF router | UniRoute |
 |---|---|---|---|
-| Pair A (0.8B vs 9B) | ~0% | **약 20%** | 약 11% |
-| Pair B (2B vs 9B) | ~10% | 약 10% | **약 26%** |
+| Pair A (0.8B vs 9B) | ~0% | **약 20%** | 약 18% |
+| Pair B (2B vs 9B) | ~10% | 약 30% | **약 40%** |
 
-- **Pair A**: MF router가 weak를 **약 20%**까지 사용해도 성능 하락 1% 이내(weak 20.03% 지점 pass 80.66%)로 가장 좋았고, UniRoute는 약 11%(weak 10.7% 지점 pass 81.21%), Random은 사실상 0%
-- **Pair B**: UniRoute가 **약 26%**까지 사용 가능(weak 26.2% 지점 pass 81.21%)으로 가장 좋았고, MF router는 약 10%(weak 10.01% 지점 pass 80.8%)로 Random(약 10%)과 큰 차이가 없었음
-- 종합하면, 사전 router로 **무작위보다 나은 routing은 가능**하지만, 1% 이내라는 조건에서 weak 사용 비율은 **약 10–26% 수준으로 낮은 편**이며, **모델 쌍·router 구조에 따라 편차**가 큼 (Pair A는 MF, Pair B는 UniRoute가 우세)
+- **Pair A**: MF router가 weak를 **약 20%**까지 사용해도 성능 하락 1% 이내(weak 20.03% 지점 pass 80.8%)로 가장 좋았고, UniRoute는 약 18%(weak 17.83% 지점 pass 81.76%), Random은 사실상 0%
+- **Pair B**: UniRoute가 **약 40%**까지 사용 가능(weak 39.64% 지점 pass 80.66%)으로 가장 좋았고, MF router도 **약 30%**(weak 30.04% 지점 pass 80.8%)로 Random(약 10%)을 크게 상회
+- 종합하면, 두 모델 쌍 모두에서 사전 router가 **Random을 분명히 상회**했고, 1% 이내라는 조건에서 weak 사용 비율은 **약 18–40% 수준**
+  - **작은 weak model(0.8B)**일수록 offload 비율이 **제한적(~20%)**, **2B weak model**에서는 **약 30–40%까지** 가능 → weak model 자체 성능이 클수록 router 효과가 커짐
+  - **모델 쌍에 따라 우세 방법이 달라짐**: Pair A는 MF, Pair B는 UniRoute
 
 ### 4.3 결과 분석
 
-- weak model 사용 가능 비율이 낮게 나온 데에는 다음과 같은 원인이 작용했을 가능성이 있음 (단정이 아닌 추정)
+- weak 사용 비율이 (특히 **작은 weak model에서**) 더 높아지지 못한 데에는 다음 요인이 작용했을 가능성이 있음 (단정이 아닌 추정)
+
+- **weak model 자체 성능의 영향**
+  - 0.8B(~20%)보다 2B(~30–40%)에서 weak 사용 비율이 크게 높았음 → **weak model이 강할수록 안전하게 맡길 수 있는 sample이 많아짐**
+  - 즉 offload 비율의 상한은 router뿐 아니라 **weak model의 기본 성능**에 크게 좌우됨
 
 - **데이터 특성: function calling 중심의 난이도**
   - BFCL은 단순 질의응답이 아니라 **function calling / tool calling** 중심이라, weak model이 안정적으로 처리하기 어려운 경향
