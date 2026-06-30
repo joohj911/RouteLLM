@@ -129,22 +129,19 @@ x축: Strong Model Calls (%), y축: Pass Rate (%)
 
 | 모델 쌍 | Random | MF router | UniRoute |
 |---|---|---|---|
-| Pair A (0.8B vs 9B) | ~0% | **약 20%** | 약 18% |
-| Pair B (2B vs 9B) | ~10% | 약 30% | **약 40%** |
+| Pair A (0.8B vs 9B) | ~0% | **약 20%** | 약 19% |
+| Pair B (2B vs 9B) | ~10% | 약 10% | **약 39%** |
 
-- **Pair A**: MF router가 weak를 **약 20%**까지 사용해도 성능 하락 1% 이내(weak 20.03% 지점 pass 80.8%)로 가장 좋았고, UniRoute는 약 18%(weak 17.83% 지점 pass 81.76%), Random은 사실상 0%
-- **Pair B**: UniRoute가 **약 40%**까지 사용 가능(weak 39.64% 지점 pass 80.66%)으로 가장 좋았고, MF router도 **약 30%**(weak 30.04% 지점 pass 80.8%)로 Random(약 10%)을 크게 상회
-- 종합하면, 두 모델 쌍 모두에서 사전 router가 **Random을 분명히 상회**했고, 1% 이내라는 조건에서 weak 사용 비율은 **약 18–40% 수준**
-  - **작은 weak model(0.8B)**일수록 offload 비율이 **제한적(~20%)**, **2B weak model**에서는 **약 30–40%까지** 가능 → weak model 자체 성능이 클수록 router 효과가 커짐
-  - **모델 쌍에 따라 우세 방법이 달라짐**: Pair A는 MF, Pair B는 UniRoute
+- **Pair A**: MF(약 20%, weak 20.03% 지점 pass 80.66%)와 UniRoute(약 19%, weak 19.34% 지점 pass 81.48%)가 비슷하게 높았고, Random은 사실상 0%
+- **Pair B**: UniRoute가 **약 39%**까지 사용 가능(weak 38.82% 지점 pass 80.8%)으로 가장 좋았고, MF는 약 10%(weak 10.01% 지점 pass 80.8%)로 Random(약 10%)과 큰 차이가 없었음
+- 종합하면, 1% 이내 조건에서 weak 사용 비율은 방법·모델 쌍에 따라 **약 10–39%로 편차가 큼**
+  - Pair A는 MF·UniRoute 모두 ~20%로 Random(0%)을 분명히 상회
+  - Pair B는 **UniRoute가 ~39%로 가장 우수**, 반면 **MF는 ~10%로 Random 수준**에 머물러 이 조합에서는 효과가 제한적
+  - 즉 **한 방법이 일관되게 우월하지 않고**, router 구조·모델 쌍에 민감
 
 ### 4.3 결과 분석
 
-- weak 사용 비율이 (특히 **작은 weak model에서**) 더 높아지지 못한 데에는 다음 요인이 작용했을 가능성이 있음 (단정이 아닌 추정)
-
-- **weak model 자체 성능의 영향**
-  - 0.8B(~20%)보다 2B(~30–40%)에서 weak 사용 비율이 크게 높았음 → **weak model이 강할수록 안전하게 맡길 수 있는 sample이 많아짐**
-  - 즉 offload 비율의 상한은 router뿐 아니라 **weak model의 기본 성능**에 크게 좌우됨
+- weak 사용 비율이 (특히 일부 조합에서) 더 높지 못한 데에는 다음 요인이 작용했을 가능성이 있음 (단정이 아닌 추정)
 
 - **데이터 특성: function calling 중심의 난이도**
   - BFCL은 단순 질의응답이 아니라 **function calling / tool calling** 중심이라, weak model이 안정적으로 처리하기 어려운 경향
@@ -156,7 +153,7 @@ x축: Strong Model Calls (%), y축: Pass Rate (%)
   - 특히 소형 카테고리의 sample 수가 적어, weak가 잘 처리하는 영역과 그렇지 않은 영역의 경계를 세밀하게 구분하기 어려웠을 수 있음
 
 - **방법론 간 차이 / 일관성 부족**
-  - Pair A는 MF가, Pair B는 UniRoute가 더 높은 weak 사용 비율을 보임 → **한 방법이 일관되게 우월하다고 보기 어려움**
+  - Pair A는 MF·UniRoute가 비슷했으나, Pair B는 **UniRoute(~39%)가 크게 우수**하고 **MF(~10%)는 Random 수준**에 머묾 → **한 방법이 일관되게 우월하다고 보기 어려움**
   - 동일 데이터에서도 **router 구조와 모델 쌍에 따라 weak safe subset을 구분하는 정도가 달라짐**을 시사
 
 - **해석 범위**
