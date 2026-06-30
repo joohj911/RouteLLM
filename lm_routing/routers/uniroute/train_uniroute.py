@@ -151,6 +151,7 @@ def train_uniroute(
     seed: int = 42,
     assignment: str = "hard",
     embedding_model: str = "intfloat/multilingual-e5-small",
+    psi_source: str = "val",
 ) -> dict:
     print(f"\nLoading train data from {train_data_path}")
     df = pd.read_json(train_data_path)
@@ -207,29 +208,39 @@ def train_uniroute(
     k_candidates = [k for k in k_candidates if 2 <= k <= n_cl]
     print(f"\nK candidates: {k_candidates}")
 
-    # ── K 선택: Ψ는 cluster_train에서 추정(out-of-sample), 평가는 val ──
+    # ── psi_source: Ψ(클러스터별 error rate)를 어디서 추정할지 ──
+    #   "val"  : KMeans는 cl에서 fit, Ψ는 held-out val에서 추정 (원 UniRoute 논문 설계, 기본값)
+    #   "train": Ψ를 cl에서 추정해 honest하게 K 선택 후, 최종 모델은 train 전체로 refit
+    def _psi_for(km, K):
+        if psi_source == "val":
+            labels = km.predict(val_embs)
+            return compute_psi(labels, val_weak, K), compute_psi(labels, val_strong, K)
+        labels = km.labels_
+        return compute_psi(labels, cl_weak, K), compute_psi(labels, cl_strong, K)
+
+    print(f"  (psi_source={psi_source})")
+
+    # ── K 선택 (평가는 항상 val) ──
     best = {"K": None, "auc": -np.inf}
     for K in k_candidates:
         km = KMeans(n_clusters=K, random_state=seed, n_init=10, max_iter=300).fit(cl_embs)
-        cl_labels = km.labels_
-        psi_w = compute_psi(cl_labels, cl_weak, K)      # Ψ ← cluster_train
-        psi_s = compute_psi(cl_labels, cl_strong, K)
+        psi_w, psi_s = _psi_for(km, K)
         val_labels = km.predict(val_embs)
-        val_scores = hard_scores(psi_w, psi_s, val_labels)
-        auc = deferral_auc(val_scores, val_weak, val_strong)  # 평가 ← val (honest)
+        auc = deferral_auc(hard_scores(psi_w, psi_s, val_labels), val_weak, val_strong)
         print(f"  K={K:3d} → val AUC = {auc:.5f}")
         if auc > best["auc"]:
             best.update({"K": K, "auc": auc})
 
-    print(f"\nBest K={best['K']}  (out-of-sample val AUC={best['auc']:.5f})")
+    print(f"\nBest K={best['K']}  (val AUC={best['auc']:.5f})")
 
-    # ── τ 선택(soft/auto): cl-Ψ로 val에서 튜닝 (honest) ──
+    # best K 재클러스터링(cl fit) → τ 튜닝과 val-모드 최종 모델에서 공통 사용
+    km_sel = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(cl_embs)
+    sel_centroids = km_sel.cluster_centers_.astype(np.float32)
+    psi_w_sel, psi_s_sel = _psi_for(km_sel, best["K"])
+
+    # ── τ 선택(soft/auto): val에서 튜닝 ──
     final_assignment, tau_mult = "hard", 1.0
     if assignment in ("soft", "auto"):
-        km_sel = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(cl_embs)
-        sel_centroids = km_sel.cluster_centers_.astype(np.float32)
-        psi_w_sel = compute_psi(km_sel.labels_, cl_weak, best["K"])
-        psi_s_sel = compute_psi(km_sel.labels_, cl_strong, best["K"])
         val_labels_sel = km_sel.predict(val_embs)
         hard_auc = deferral_auc(hard_scores(psi_w_sel, psi_s_sel, val_labels_sel), val_weak, val_strong)
         best_mult, soft_auc = tune_tau(val_embs, sel_centroids, psi_w_sel, psi_s_sel, val_weak, val_strong)
@@ -237,17 +248,24 @@ def train_uniroute(
         if assignment == "soft" or soft_auc > hard_auc:
             final_assignment, tau_mult = "soft", best_mult
 
-    # ── 최종 모델: 전체 train(cl+val)으로 refit, Ψ도 전체에서 추정 ──
-    km_final = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(train_embs)
-    centroids = km_final.cluster_centers_.astype(np.float32)
-    all_labels = km_final.labels_
-    psi_w_final = compute_psi(all_labels, all_weak, best["K"])
-    psi_s_final = compute_psi(all_labels, all_strong, best["K"])
-    final_tau = tau_mult * _tau_gap(train_embs, centroids) if final_assignment == "soft" else 1.0
+    # ── 최종 모델 ──
+    if psi_source == "train":
+        # train 전체로 refit, Ψ도 전체에서 추정
+        km_final = KMeans(n_clusters=best["K"], random_state=seed, n_init=10, max_iter=300).fit(train_embs)
+        centroids = km_final.cluster_centers_.astype(np.float32)
+        psi_w_final = compute_psi(km_final.labels_, all_weak, best["K"])
+        psi_s_final = compute_psi(km_final.labels_, all_strong, best["K"])
+        tau_embs = train_embs
+        print(f"  Final: refit on all {len(train_embs)} train samples, Ψ from train")
+    else:
+        # 논문 설계: 클러스터는 cl, Ψ는 val
+        centroids = sel_centroids
+        psi_w_final, psi_s_final = psi_w_sel, psi_s_sel
+        tau_embs = val_embs
+        print(f"  Final: clusters from cl, Ψ from val ({len(val_idx)} samples)")
 
-    print(f"  Final Ψ on all {len(train_embs)} train samples.")
-    print(f"  Ψ_weak  (mean={psi_w_final.mean():.3f})")
-    print(f"  Ψ_strong(mean={psi_s_final.mean():.3f})")
+    final_tau = tau_mult * _tau_gap(tau_embs, centroids) if final_assignment == "soft" else 1.0
+    print(f"  Ψ_weak(mean={psi_w_final.mean():.3f})  Ψ_strong(mean={psi_s_final.mean():.3f})")
     print(f"  → assignment = {final_assignment}" + (f" (τ={final_tau:.4g})" if final_assignment == "soft" else ""))
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -262,6 +280,7 @@ def train_uniroute(
             "val_auc": best["auc"],
             "assignment": final_assignment,
             "tau": final_tau,
+            "psi_source": psi_source,
             "embedding_model": embedding_model,
             "embedding_prefix": "query: ",
         },
@@ -298,6 +317,12 @@ if __name__ == "__main__":
         "--embedding-model", type=str, default="intfloat/multilingual-e5-small",
         help="embeddings.npy를 만든 임베딩 모델. 체크포인트에 기록되어 추론 인코딩에 사용.",
     )
+    parser.add_argument(
+        "--psi-source", choices=["val", "train"], default="val",
+        help="Ψ(클러스터별 error) 추정 데이터. "
+        "val=held-out val에서 추정(원 UniRoute 논문 설계, 기본), "
+        "train=cl에서 K 선택 후 train 전체로 refit(데이터 더 사용).",
+    )
     args = parser.parse_args()
 
     train_uniroute(
@@ -311,4 +336,5 @@ if __name__ == "__main__":
         seed=args.seed,
         assignment=args.assignment,
         embedding_model=args.embedding_model,
+        psi_source=args.psi_source,
     )

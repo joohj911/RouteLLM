@@ -33,6 +33,7 @@ NUM_RESULTS=10
 RANDOM_ITERS=10
 EMB_MODEL="intfloat/multilingual-e5-small"
 UNIROUTE_ASSIGNMENT="hard"   # 기본 hard(최근접 클러스터). soft 쓰려면 --uniroute-assignment soft|auto
+UNIROUTE_PSI="val"           # Ψ 추정 데이터: val(논문 설계, 기본) | train(전체 refit)
 MF_LR="3e-4"
 MF_WD="1e-5"
 
@@ -48,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --random-iters)   RANDOM_ITERS="$2"; shift 2 ;;
     --embedding-model) EMB_MODEL="$2"; shift 2 ;;
     --uniroute-assignment) UNIROUTE_ASSIGNMENT="$2"; shift 2 ;;
+    --uniroute-psi)   UNIROUTE_PSI="$2"; shift 2 ;;
     --mf-lr)          MF_LR="$2"; shift 2 ;;
     --mf-weight-decay) MF_WD="$2"; shift 2 ;;
     *) echo "[error] Unknown option: $1" >&2; exit 1 ;;
@@ -204,6 +206,7 @@ python lm_routing/routers/uniroute/train_uniroute.py \
   --weak-model   "${WEAK_0_8B}" \
   --strong-model "${STRONG}" \
   --assignment   "${UNIROUTE_ASSIGNMENT}" \
+  --psi-source   "${UNIROUTE_PSI}" \
   --embedding-model "${EMB_MODEL}"
 
 echo "  Pair B UniRoute → ${DATA_2B}/uniroute_model.pt"
@@ -214,6 +217,7 @@ python lm_routing/routers/uniroute/train_uniroute.py \
   --weak-model   "${WEAK_2B}" \
   --strong-model "${STRONG}" \
   --assignment   "${UNIROUTE_ASSIGNMENT}" \
+  --psi-source   "${UNIROUTE_PSI}" \
   --embedding-model "${EMB_MODEL}"
 
 # ── Per-model regression routers (R2-style, budget-free) ──
