@@ -33,7 +33,7 @@ quant = ["bitsandbytes>=0.43.0"]
 dev = ["black", "isort", "pre-commit"]
 
 [project.urls]
-"Homepage" = "https://github.com/joohj911/RouteLLM"
+"Homepage" = "https://github.com/joohj911/LLM_Routing"
 
 [tool.isort]
 profile = "black"

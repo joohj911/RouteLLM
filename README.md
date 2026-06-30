@@ -27,8 +27,8 @@ Each router produces a deferral curve: x = strong model call %, y = pass rate.
 ## Installation
 
 ```bash
-git clone https://github.com/joohj911/RouteLLM.git
-cd RouteLLM
+git clone https://github.com/joohj911/LLM_Routing.git
+cd LLM_Routing
 
 # 1. Install the torch build that matches your NVIDIA driver FIRST.
 #    Check your driver's max CUDA version with `nvidia-smi` (top-right).
@@ -273,6 +273,14 @@ uniroute:
 ## Extending
 
 Implement the abstract `Router` class in `lm_routing/routers/routers.py` and add it to `ROUTER_CLS`. The only required method is `calculate_strong_win_rate(prompt) -> float`. If the returned value exceeds the user-specified threshold, the request goes to the strong model.
+
+## Acknowledgements
+
+This project is a modified derivative of [RouteLLM](https://github.com/lm-sys/RouteLLM)
+(Apache-2.0). The matrix-factorization router builds on RouteLLM; substantial
+changes were made for tool-calling routing (BFCL evaluation, Qwen3.5 model pairs,
+local multilingual-e5 embeddings, UniRoute and per-model regression routers). See
+[`NOTICE`](./NOTICE) for attribution and [`LICENSE`](./LICENSE) for terms.
 
 ## Citation
 
